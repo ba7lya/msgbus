@@ -194,7 +194,10 @@ void sink(const auto&... unused) { static_cast<void>(sizeof...(unused)); }
 /// @brief A message carrying `topic` and an integer payload, for the cases that assert on provenance.
 [[nodiscard]]
 message make_message(std::string_view topic, int payload = 0, std::string source = {}, std::uint64_t seq = 0) {
-    return message { topic_name(topic), std::any { payload }, message_meta { {}, std::move(source), seq } };
+    return message {
+        topic_name(topic), std::any { payload },
+          message_meta { {}, std::move(source), seq }
+    };
 }
 
 /// @brief Registers `callback`, failing the test if the pattern is rejected.
@@ -406,10 +409,14 @@ TEST(msgbus_test, publish_async_returns_before_the_handler_has_run) {
     msgbus bus;
     gate g;
     std::atomic<bool> ran { false };
-    subscribe(bus, "a/b", [&](const message&) {
-        g.hold();
-        ran = true;
-    }, dispatch_options { msgbus::ROUTER });
+    subscribe(
+        bus, "a/b",
+        [&](const message&) {
+            g.hold();
+            ran = true;
+        },
+        dispatch_options { msgbus::ROUTER }
+    );
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
     g.wait_entered();
@@ -507,10 +514,14 @@ TEST(msgbus_test, publish_async_rejects_when_the_routing_queue_is_full_under_dro
     msgbus bus(bounded(1, back_pressure::DROP_NEW));
     gate g;
     std::atomic<int> ran { 0 };
-    subscribe(bus, "a/b", [&](const message&) {
-        g.hold();
-        ++ran;
-    }, dispatch_options { msgbus::ROUTER });
+    subscribe(
+        bus, "a/b",
+        [&](const message&) {
+            g.hold();
+            ++ran;
+        },
+        dispatch_options { msgbus::ROUTER }
+    );
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED); // the worker takes it
     g.wait_entered();
@@ -534,10 +545,14 @@ TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
         const std::scoped_lock guard(mutex);
         seen.push_back(std::any_cast<int>(msg.payload_));
     };
-    subscribe(bus, "a/b", [&](const message& msg) {
-        g.hold();
-        record(msg);
-    }, dispatch_options { msgbus::ROUTER });
+    subscribe(
+        bus, "a/b",
+        [&](const message& msg) {
+            g.hold();
+            record(msg);
+        },
+        dispatch_options { msgbus::ROUTER }
+    );
     subscribe(bus, "a/b", record, dispatch_options { msgbus::ROUTER });
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
@@ -559,10 +574,14 @@ TEST(msgbus_test, publish_async_under_block_never_rejects_a_full_queue) {
     msgbus bus(bounded(1, back_pressure::BLOCK));
     gate g;
     std::atomic<int> ran { 0 };
-    subscribe(bus, "a/b", [&](const message&) {
-        g.hold();
-        ++ran;
-    }, dispatch_options { msgbus::ROUTER });
+    subscribe(
+        bus, "a/b",
+        [&](const message&) {
+            g.hold();
+            ++ran;
+        },
+        dispatch_options { msgbus::ROUTER }
+    );
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
     g.wait_entered();
@@ -592,10 +611,14 @@ TEST(msgbus_test, publish_async_from_the_routing_worker_is_rejected_when_the_que
     msgbus bus(bounded(1, back_pressure::DROP_NEW));
     gate g;
     std::atomic<publish_status> nested { publish_status::ACCEPTED };
-    subscribe(bus, "a/b", [&](const message&) {
-        g.hold();
-        nested = bus.publish_async("a/b", std::any { 9 });
-    }, dispatch_options { msgbus::ROUTER });
+    subscribe(
+        bus, "a/b",
+        [&](const message&) {
+            g.hold();
+            nested = bus.publish_async("a/b", std::any { 9 });
+        },
+        dispatch_options { msgbus::ROUTER }
+    );
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED); // the worker takes it
     g.wait_entered();
@@ -636,11 +659,15 @@ TEST(msgbus_test, flush_does_not_wait_for_an_executor_thread) {
     ASSERT_TRUE(bus.add_executor(7));
     recorder received;
     std::atomic<bool> entered { false };
-    subscribe(bus, "a/b", [&](const message& msg) {
-        entered = true;
-        g.hold();
-        received.callback()(msg);
-    }, dispatch_options { 7 });
+    subscribe(
+        bus, "a/b",
+        [&](const message& msg) {
+            entered = true;
+            g.hold();
+            received.callback()(msg);
+        },
+        dispatch_options { 7 }
+    );
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
     while (!entered.load()) {}
@@ -659,11 +686,13 @@ TEST(msgbus_test, flush_from_the_routing_worker_throws) {
     msgbus bus;
     std::mutex mutex;
     std::exception_ptr failure;
-    subscribe(bus, "a/b", [&](const message&) { sink(bus.flush()); }, dispatch_options { msgbus::ROUTER },
-              [&](const message&, std::exception_ptr cause) {
-                  const std::scoped_lock guard(mutex);
-                  failure = cause;
-              });
+    subscribe(
+        bus, "a/b", [&](const message&) { sink(bus.flush()); }, dispatch_options { msgbus::ROUTER },
+        [&](const message&, std::exception_ptr cause) {
+            const std::scoped_lock guard(mutex);
+            failure = cause;
+        }
+    );
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
@@ -723,10 +752,14 @@ TEST(msgbus_test, publish_sync_does_not_wait_for_an_executor_bound_delivery) {
     gate g;
     ASSERT_TRUE(bus.add_executor(7));
     std::atomic<bool> ran { false };
-    subscribe(bus, "a/b", [&](const message&) {
-        g.hold();
-        ran = true;
-    }, dispatch_options { 7 });
+    subscribe(
+        bus, "a/b",
+        [&](const message&) {
+            g.hold();
+            ran = true;
+        },
+        dispatch_options { 7 }
+    );
 
     bus.publish_sync("a/b", std::any { 1 });
     EXPECT_FALSE(ran.load()) << "the delivery was handed over, not finished";
@@ -801,13 +834,15 @@ TEST(msgbus_test, a_synchronous_failure_with_an_error_handler_is_consumed_there)
     msgbus bus;
     std::mutex mutex;
     std::size_t count = 0;
-    subscribe(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, {},
-              [&](const message& msg, std::exception_ptr cause) {
-                  const std::scoped_lock guard(mutex);
-                  ++count;
-                  EXPECT_EQ(msg.topic_, "boom");
-                  EXPECT_TRUE(cause != nullptr);
-              });
+    subscribe(
+        bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, {},
+        [&](const message& msg, std::exception_ptr cause) {
+            const std::scoped_lock guard(mutex);
+            ++count;
+            EXPECT_EQ(msg.topic_, "boom");
+            EXPECT_TRUE(cause != nullptr);
+        }
+    );
 
     EXPECT_NO_THROW(bus.publish_sync("boom", std::any { 1 }));
     EXPECT_NO_THROW(bus.publish_sync("boom", std::any { 2 }));
@@ -834,7 +869,9 @@ TEST(msgbus_test, an_asynchronous_failure_with_no_error_handler_reaches_the_erro
     failure_log log;
     settings.on_exception_ = log.sink();
     msgbus bus(std::move(settings));
-    subscribe(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { msgbus::ROUTER });
+    subscribe(
+        bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { msgbus::ROUTER }
+    );
 
     EXPECT_EQ(bus.publish_async("boom", std::any { 1 }), publish_status::ACCEPTED);
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
@@ -865,8 +902,10 @@ TEST(msgbus_test, an_executor_bound_failure_goes_to_its_own_error_handler_not_th
     msgbus bus(std::move(settings));
     ASSERT_TRUE(bus.add_executor(7));
     std::atomic<int> handled { 0 };
-    subscribe(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { 7 },
-              [&](const message&, std::exception_ptr) { ++handled; });
+    subscribe(
+        bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { 7 },
+        [&](const message&, std::exception_ptr) { ++handled; }
+    );
 
     bus.publish_sync("boom", std::any { 1 });
     EXPECT_TRUE(bus.executors().find(7)->drain());
@@ -882,7 +921,9 @@ TEST(msgbus_test, an_error_sink_that_throws_does_not_take_the_worker_down) {
     msgbus::config settings;
     settings.on_exception_ = [](std::exception_ptr) { throw std::logic_error("sink failed"); };
     msgbus bus(std::move(settings));
-    subscribe(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { msgbus::ROUTER });
+    subscribe(
+        bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { msgbus::ROUTER }
+    );
     recorder received;
     subscribe(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
 
@@ -1050,10 +1091,14 @@ TEST(msgbus_test, release_waits_for_a_delivery_already_handed_to_another_executo
     gate g;
     ASSERT_TRUE(bus.add_executor(7));
     std::atomic<bool> ran { false };
-    subscribe(bus, "a/b", [&](const message&) {
-        g.hold();
-        ran = true;
-    }, dispatch_options { 7 });
+    subscribe(
+        bus, "a/b",
+        [&](const message&) {
+            g.hold();
+            ran = true;
+        },
+        dispatch_options { 7 }
+    );
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
@@ -1117,9 +1162,7 @@ TEST(msgbus_test, concurrent_asynchronous_publishers_are_all_routed) {
     publishers.reserve(THREADS);
     for (int t = 0; t < THREADS; ++t) {
         publishers.emplace_back([&bus] {
-            for (int i = 0; i < PER_THREAD; ++i) {
-                sink(bus.publish_async("a/b", std::any { i }));
-            }
+            for (int i = 0; i < PER_THREAD; ++i) { sink(bus.publish_async("a/b", std::any { i })); }
         });
     }
     for (std::thread& publisher : publishers) { publisher.join(); }
