@@ -44,13 +44,10 @@ AllowShortLambdasOnASingleLine: All
 AllowShortLoopsOnASingleLine: true
 AllowShortNamespacesOnASingleLine: true
 AlwaysBreakBeforeMultilineStrings: true
-AlwaysBreakTemplateDeclarations: Yes # deprecated
 AttributeMacros:
   - __capability
   - __output
   - __ununsed
-BinPackArguments: false
-BinPackParameters: false
 BitFieldColonSpacing: Before
 BracedInitializerIndentWidth: 4
 BraceWrapping:
@@ -83,7 +80,7 @@ BreakConstructorInitializers: BeforeComma
 BreakInheritanceList: BeforeComma
 BreakStringLiterals: true
 BreakTemplateDeclarations: Yes
-ColumnLimit: 100
+ColumnLimit: 120
 CommentPragmas: "^ IWYU pragma:" # ???
 CompactNamespaces: false
 ConstructorInitializerIndentWidth: 4
@@ -125,7 +122,7 @@ IndentCaseLabels: false
 IndentExternBlock: NoIndent
 IndentGotoLabels: false
 IndentPPDirectives: None
-IndentRequires: true
+IndentRequiresClause: true
 IndentWidth: 4
 IndentWrappedFunctionNames: true
 InsertBraces: true
@@ -143,8 +140,8 @@ KeepEmptyLines:
   AtStartOfBlock: false
   AtStartOfFile: false
 LambdaBodyIndentation: Signature
-Language: Cpp
-LineEnding: CRLF
+# Language: Cpp
+LineEnding: LF
 MacroBlockBegin: ""
 MacroBlockEnd: ""
 # Macros:
@@ -195,17 +192,20 @@ SpaceBeforeParensOptions:
   BeforeNonEmptyParentheses: false
 SpaceBeforeRangeBasedForLoopColon: true
 SpaceBeforeSquareBrackets: false
+SpaceInEmptyBraces: Never
 SpacesBeforeTrailingComments: 1
 SpacesInAngles: Never
-SpacesInConditionalStatement: false
 SpacesInContainerLiterals: false
-SpacesInCStyleCastParentheses: false
-SpaceInEmptyBlock: false
-SpaceInEmptyParentheses: false
 SpacesInLineCommentPrefix:
   Minimum: 1
   Maximum: 1
 SpacesInParens: Never
+SpacesInParensOptions:
+  ExceptDoubleParentheses: false
+  InCStyleCasts: false
+  InConditionalStatements: false
+  InEmptyParentheses: false
+  Other: false
 SpacesInSquareBrackets: false
 Standard: Latest
 StatementAttributeLikeMacros:
@@ -224,4 +224,4 @@ WhitespaceSensitiveMacros: # ???
   - BOOST_PP_STRINGIZE
   - NS_SWIFT_NAME
   - CF_SWIFT_NAME
----
+...

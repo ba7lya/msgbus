@@ -36,11 +36,14 @@
         "copyright",
     ],
     "editor.wordWrap": "wordWrapColumn",
-    "editor.wordWrapColumn": 100,
+    "editor.wordWrapColumn": 120,
     "files.associations": {
         "*.clang-format": "yaml",
         "*.clang-tidy": "yaml",
-        "*.qrc": "xml",
-        "*.cxx": "cpp"
-    }
+        "*.cxx": "cpp",
+        "*.hxx": "cpp"
+    },
+    "protobuf.clangFormat.enabled": true,
+    "protobuf.clangFormat.path": "clang-format",
+    "protobuf.clangFormat.style": "file"
 }

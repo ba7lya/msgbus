@@ -1,0 +1,361 @@
+# SPDX-License-Identifier: MIT
+#
+# The three-job convention: one job per compiler family. Each job spans the most recent major
+# compiler releases and both Debug and Release configurations.
+#
+# The vcpkg submodule is never checked out -- it is large, and vcpkg.json already pins every port
+# version through its builtin-baseline. run-vcpkg instead clones vcpkg at exactly that baseline,
+# so the manifest resolves to the same ports the submodule would have.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # the vcpkg commit vcpkg.json's builtin-baseline pins, so every job resolves the same ports
+  VCPKG_COMMIT: e456309491fd875487bf02b8a0dca76c1b1b00cc
+  VCPKG_DISABLE_METRICS: 1
+  # run-vcpkg defaults VCPKG_BINARY_SOURCES to its own 'clear;x-gha,readwrite' only when the
+  # variable is undefined, and this vcpkg has dropped the 'x-gha' backend, so every `vcpkg install`
+  # warns that it was removed. Name vcpkg's 'default' provider instead: it archives into
+  # VCPKG_DEFAULT_BINARY_CACHE, which the action already points at the directory it hands to
+  # actions/cache, so archives keep being cached and restored across runs.
+  VCPKG_BINARY_SOURCES: clear;default,readwrite
+  # the project's own build options, one per ${PROJECT_NAME}_BUILD_* option in the root CMakeLists
+  MSGBUS_CONFIGURE_FLAGS: >-
+    -Dba7lya.msgbus_BUILD_TEST=ON
+    -Dba7lya.msgbus_BUILD_BENCHMARK=ON
+    -Dba7lya.msgbus_BUILD_EXAMPLE=ON
+
+jobs:
+  win-msvc:
+    name: win-msvc-${{ matrix.version }}-${{ matrix.config_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # one job per msvc major, debug and release each. `version` is the compiler major the job
+        # exercises (as in the linux jobs) and drives the job name; `base` names the configure
+        # preset family, which is `win-msvc-<major>-<arch>`; `config` keeps the exact spelling the
+        # configure presets and ctest use (`config_name` is the abbreviated one the job and
+        # artifact names use, dbg for Debug and rel for Release).
+        #
+        # vs 2019 is absent on purpose: the library uses std::expected, which MSVC only shipped
+        # from 17.12 (vs 2022 17.12), so the v142 toolset cannot compile this tree in C++23 mode.
+        #
+        # `vsversion` selects the visual studio *instance* to activate and `toolset` the
+        # compiler inside it.
+        include:
+          - os: windows-2022
+            version: 2022
+            vsversion: "2022"
+            toolset: "14.44"
+            base: win-msvc-2022-x64
+            config: Debug
+            config_name: dbg
+          - os: windows-2022
+            version: 2022
+            vsversion: "2022"
+            toolset: "14.44"
+            base: win-msvc-2022-x64
+            config: Release
+            config_name: rel
+          - os: windows-2025-vs2026
+            version: 2026
+            vsversion: "2026"
+            toolset: "14.51"
+            base: win-msvc-2026-x64
+            config: Debug
+            config_name: dbg
+          - os: windows-2025-vs2026
+            version: 2026
+            vsversion: "2026"
+            toolset: "14.51"
+            base: win-msvc-2026-x64
+            config: Release
+            config_name: rel
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      # the presets pin cl.exe by bare name, so the toolset is chosen by putting the matching
+      # cl.exe on PATH rather than by the preset's toolset field (the Ninja generators ignore it)
+      #
+      # rzlamrr/msvc-dev-cmd continues ilammy/msvc-dev-cmd 1.13 (unmaintained since 2024-04) and
+      # declares node24, so it does not draw the node20 deprecation warning. it also knows the
+      # vs 2026 layout (the `18` installation directory), which upstream does not
+      - uses: rzlamrr/msvc-dev-cmd@v2
+        with:
+          arch: x64
+          vsversion: ${{ matrix.vsversion }}
+          toolset: ${{ matrix.toolset }}
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: configure
+        shell: cmd
+        run: >
+          cmake --preset ${{ matrix.base }}
+          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          %MSGBUS_CONFIGURE_FLAGS%
+
+      - name: build
+        shell: cmd
+        run: cmake --build --preset ${{ matrix.base }}-${{ matrix.config_name }}
+
+      # --output-junit resolves a relative path against the build tree the test preset points at,
+      # so the report lands beside the binaries rather than in the checkout root
+      - name: test
+        shell: cmd
+        run: ctest --preset ${{ matrix.base }}-test -C ${{ matrix.config }} --output-junit test-results.xml
+
+      # The runtime artifacts of a configuration share one directory, so the benchmark runs from
+      # the same place the library does and the loader finds the DLL beside the executable.
+      - name: smoke the benchmarks
+        shell: cmd
+        run: >
+          build\${{ matrix.base }}\bin\${{ matrix.config }}\msgbus_benchmark.exe
+          --benchmark_min_time=0.01s
+
+      - name: smoke the examples
+        shell: cmd
+        run: build\${{ matrix.base }}\bin\${{ matrix.config }}\msgbus_example_basic_matching.exe
+
+      - name: upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-win-msvc-${{ matrix.version }}-${{ matrix.config_name }}
+          path: build/${{ matrix.base }}/test-results.xml
+          if-no-files-found: warn
+
+  linux-gcc:
+    name: linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [14, 15, 16]
+        config: [Debug, Release]
+        include:
+          # `config` keeps the spelling the configure presets and ctest use, `config_name` is the
+          # abbreviated one the job and artifact names use (dbg for Debug, rel for Release)
+          - config: Debug
+            config_name: dbg
+          - config: Release
+            config_name: rel
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      # noble's own archive stops at gcc 14, so the newer series come from the toolchain ppa
+      - name: install gcc ${{ matrix.version }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y gcc-${{ matrix.version }} g++-${{ matrix.version }} ninja-build
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${{ matrix.version }} 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${{ matrix.version }} 100
+          gcc --version
+          g++ --version
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: configure
+        run: >
+          cmake --preset linux-gcc-x64
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          $MSGBUS_CONFIGURE_FLAGS
+
+      - name: build
+        run: cmake --build --preset linux-gcc-x64-${{ matrix.config_name }}
+
+      # --output-junit resolves a relative path against the build tree the test preset points at,
+      # so the report lands beside the binaries rather than in the checkout root
+      - name: test
+        run: ctest --preset linux-gcc-x64-test -C ${{ matrix.config }} --output-junit test-results.xml
+
+      - name: smoke the benchmarks
+        run: ./build/linux-gcc-x64/bin/${{ matrix.config }}/msgbus_benchmark --benchmark_min_time=0.01s
+
+      - name: smoke the examples
+        run: ./build/linux-gcc-x64/bin/${{ matrix.config }}/msgbus_example_basic_matching
+
+      - name: upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}
+          path: build/linux-gcc-x64/test-results.xml
+          if-no-files-found: warn
+
+  linux-clang:
+    name: linux-clang-${{ matrix.version }}-${{ matrix.config_name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [21, 22, 23]
+        config: [Debug, Release]
+        include:
+          - config: Debug
+            config_name: dbg
+          - config: Release
+            config_name: rel
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: install clang ${{ matrix.version }}
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ matrix.version }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y clang-${{ matrix.version }} ninja-build
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ matrix.version }} 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${{ matrix.version }} 100
+          clang --version
+          clang++ --version
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: configure
+        run: >
+          cmake --preset linux-clang-x64
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          $MSGBUS_CONFIGURE_FLAGS
+
+      - name: build
+        run: cmake --build --preset linux-clang-x64-${{ matrix.config_name }}
+
+      # --output-junit resolves a relative path against the build tree the test preset points at,
+      # so the report lands beside the binaries rather than in the checkout root
+      - name: test
+        run: ctest --preset linux-clang-x64-test -C ${{ matrix.config }} --output-junit test-results.xml
+
+      - name: smoke the benchmarks
+        run: ./build/linux-clang-x64/bin/${{ matrix.config }}/msgbus_benchmark --benchmark_min_time=0.01s
+
+      - name: smoke the examples
+        run: ./build/linux-clang-x64/bin/${{ matrix.config }}/msgbus_example_basic_matching
+
+      - name: upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-linux-clang-${{ matrix.version }}-${{ matrix.config_name }}
+          path: build/linux-clang-x64/test-results.xml
+          if-no-files-found: warn
+
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    # the .clang-format uses keys only the current llvm major understands, so the job runs the same
+    # clang-format major the developers run locally rather than whichever one the image happens to
+    # carry -- an older binary rejects the file outright
+    env:
+      LLVM_VERSION: 23
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: install clang-format
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y clang-format-${LLVM_VERSION}
+          clang-format-${LLVM_VERSION} --version
+
+      - name: clang-format --dry-run --Werror
+        run: |
+          set -o pipefail
+          find include tests examples benchmark \
+            \( -name '*.cxx' -o -name '*.hxx' \) -print0 \
+            | xargs -0 -r clang-format-${LLVM_VERSION} --dry-run --Werror --style=file
+
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    env:
+      LLVM_VERSION: 23
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: install clang-tidy
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y clang-${LLVM_VERSION} clang-tidy-${LLVM_VERSION} clang-tools-${LLVM_VERSION} ninja-build
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${LLVM_VERSION} 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${LLVM_VERSION} 100
+          clang-tidy-${LLVM_VERSION} --version
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      # the analysis needs the exact flags each translation unit is built with, so it reads the
+      # compile database the configure step writes rather than guessing a command line
+      - name: configure
+        run: >
+          cmake --preset linux-clang-x64
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          $MSGBUS_CONFIGURE_FLAGS
+
+      - name: assert the compile database exists
+        run: test -s build/linux-clang-x64/compile_commands.json
+
+      # report only: clang-tidy exits non-zero for a compiler error but not for a warning, so the
+      # job surfaces the findings in its log and artifact without gating the build on them
+      - name: clang-tidy
+        run: |
+          set -o pipefail
+          run-clang-tidy-${LLVM_VERSION} -p build/linux-clang-x64 \
+            -clang-tidy-binary clang-tidy-${LLVM_VERSION} \
+            -source-filter '/(tests|examples|benchmark)/' \
+            -header-filter '.*/(include|tests|examples|benchmark)/.*' \
+            2>&1 | tee clang-tidy.log
+
+      - name: upload the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clang-tidy-report
+          path: clang-tidy.log
+          if-no-files-found: warn
