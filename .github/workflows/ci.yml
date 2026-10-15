@@ -39,51 +39,52 @@ env:
 
 jobs:
   win-msvc:
-    name: win-msvc-${{ matrix.version }}-${{ matrix.config_name }}
+    name: win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # one job per msvc major, debug and release each. `version` is the compiler major the job
-        # exercises (as in the linux jobs) and drives the job name; `base` names the configure
-        # preset family, which is `win-msvc-<major>-<arch>`; `config` keeps the exact spelling the
-        # configure presets and ctest use (`config_name` is the abbreviated one the job and
-        # artifact names use, dbg for Debug and rel for Release).
+        # one job per msvc major, debug and release each, and twice per combination: once as the
+        # compiler ships it and once built with a sanitizer. `version` is the compiler major the job
+        # exercises (as in the linux jobs) and drives the job name; `base` names the configure preset
+        # family, which is `win-msvc-<major>-<arch>`; `config` keeps the exact spelling the configure
+        # presets and ctest use (`config_name` is the abbreviated one the job and artifact names use,
+        # dbg for Debug and rel for Release).
         #
-        # vs 2019 is absent on purpose: the library uses std::expected, which MSVC only shipped
-        # from 17.12 (vs 2022 17.12), so the v142 toolset cannot compile this tree in C++23 mode.
-        #
-        # `vsversion` selects the visual studio *instance* to activate and `toolset` the
-        # compiler inside it.
+        # `san` names the sanitizer the second pass builds with, so the empty string is the
+        # uninstrumented pass and `asan` the instrumented one. The presets spell it `-asan`, so the
+        # job name appends `-<san>` while the preset names concatenate it: the build preset is
+        # `<base>-<config_name>` plus `-<san>` when set, the test preset `<base>-<san>-test`. msvc
+        # ships address only: cl.exe SILENTLY IGNORES /fsanitize=thread and =undefined (warning D9002,
+        # exit code 0), so a `tsan` or `ubsan` job here would go green having checked nothing.
+        version: [2022, 2026]
+        config: [Debug, Release]
+        san: ["", "asan"]
         include:
-          - os: windows-2022
-            version: 2022
+          # vs 2019 is absent on purpose: the library uses std::expected, which MSVC only shipped
+          # from 17.12 (vs 2022 17.12), so the v142 toolset cannot compile this tree in C++23 mode.
+          #
+          # `vsversion` selects the visual studio *instance* to activate and `toolset` the
+          # compiler inside it.
+          - version: 2022
+            os: windows-2022
             vsversion: "2022"
             toolset: "14.44"
             base: win-msvc-2022-x64
-            config: Debug
-            config_name: dbg
-          - os: windows-2022
-            version: 2022
-            vsversion: "2022"
-            toolset: "14.44"
-            base: win-msvc-2022-x64
-            config: Release
-            config_name: rel
-          - os: windows-2025-vs2026
-            version: 2026
+          - version: 2026
+            os: windows-2025-vs2026
             vsversion: "2026"
             toolset: "14.51"
             base: win-msvc-2026-x64
-            config: Debug
+          - config: Debug
             config_name: dbg
-          - os: windows-2025-vs2026
-            version: 2026
-            vsversion: "2026"
-            toolset: "14.51"
-            base: win-msvc-2026-x64
-            config: Release
+          - config: Release
             config_name: rel
+    env:
+      # the presets spell a sanitizer with a leading hyphen while the matrix names it bare, so the
+      # suffix is built once here: `-asan` on an instrumented entry, empty on the plain one. Every
+      # preset name below is then `<base><SAN>` or `<base>-<config_name><SAN>`.
+      SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -95,6 +96,9 @@ jobs:
       # rzlamrr/msvc-dev-cmd continues ilammy/msvc-dev-cmd 1.13 (unmaintained since 2024-04) and
       # declares node24, so it does not draw the node20 deprecation warning. it also knows the
       # vs 2026 layout (the `18` installation directory), which upstream does not
+      #
+      # it also has to run before any test binary: the asan runtime is a dll that lives in the
+      # toolset's bin directory, and this action is what puts that directory on PATH
       - uses: rzlamrr/msvc-dev-cmd@v2
         with:
           arch: x64
@@ -108,30 +112,40 @@ jobs:
       - name: configure
         shell: cmd
         run: >
-          cmake --preset ${{ matrix.base }}
+          cmake --preset ${{ matrix.base }}${{ env.SAN }}
           -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
           "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
           %MSGBUS_CONFIGURE_FLAGS%
 
       - name: build
         shell: cmd
-        run: cmake --build --preset ${{ matrix.base }}-${{ matrix.config_name }}
+        run: cmake --build --preset ${{ matrix.base }}-${{ matrix.config_name }}${{ env.SAN }}
 
       # --output-junit resolves a relative path against the build tree the test preset points at,
       # so the report lands beside the binaries rather than in the checkout root
+      #
+      # deliberately no ASAN_OPTIONS=detect_leaks=1: msvc's asan runtime does not implement leak
+      # detection, it fails every test instead of reporting the leak. the flag is honest on linux
+      # and is set there
       - name: test
         shell: cmd
-        run: ctest --preset ${{ matrix.base }}-test -C ${{ matrix.config }} --output-junit test-results.xml
+        run: ctest --preset ${{ matrix.base }}${{ env.SAN }}-test -C ${{ matrix.config }} --output-junit test-results.xml
 
       # The runtime artifacts of a configuration share one directory, so the benchmark runs from
       # the same place the library does and the loader finds the DLL beside the executable.
+      #
+      # The instruments are left out of the smoke runs: both have already run in the plain pass,
+      # running them again under asan only doubles the job's time, and a timed benchmark measures
+      # the instrumentation rather than the library.
       - name: smoke the benchmarks
+        if: matrix.san == ''
         shell: cmd
         run: >
           build\${{ matrix.base }}\bin\${{ matrix.config }}\msgbus_benchmark.exe
           --benchmark_min_time=0.01s
 
       - name: smoke the examples
+        if: matrix.san == ''
         shell: cmd
         run: build\${{ matrix.base }}\bin\${{ matrix.config }}\msgbus_example_basic_matching.exe
 
@@ -139,18 +153,24 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results-win-msvc-${{ matrix.version }}-${{ matrix.config_name }}
-          path: build/${{ matrix.base }}/test-results.xml
+          name: test-results-win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
+          path: build/${{ matrix.base }}${{ env.SAN }}/test-results.xml
           if-no-files-found: warn
 
   linux-gcc:
-    name: linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}
+    name: linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         version: [14, 15, 16]
         config: [Debug, Release]
+        # gcc carries the whole family, so each job runs the tests four times: as the compiler
+        # ships them, under address, under thread and under undefined. `san` names the sanitizer
+        # bare, the `SAN` the job exports spells it `-asan`. The architecture stays x64: the x86
+        # presets exist for the release matrix, not for a second instrumented build of the same
+        # code, which would only double the job's time to check the same source twice.
+        san: ["", "asan", "tsan", "ubsan"]
         include:
           # `config` keeps the spelling the configure presets and ctest use, `config_name` is the
           # abbreviated one the job and artifact names use (dbg for Debug, rel for Release)
@@ -158,6 +178,8 @@ jobs:
             config_name: dbg
           - config: Release
             config_name: rel
+    env:
+      SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -182,46 +204,69 @@ jobs:
 
       - name: configure
         run: >
-          cmake --preset linux-gcc-x64
+          cmake --preset linux-gcc-x64${{ env.SAN }}
           -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
           "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
           $MSGBUS_CONFIGURE_FLAGS
 
       - name: build
-        run: cmake --build --preset linux-gcc-x64-${{ matrix.config_name }}
+        run: cmake --build --preset linux-gcc-x64-${{ matrix.config_name }}${{ env.SAN }}
 
       # --output-junit resolves a relative path against the build tree the test preset points at,
       # so the report lands beside the binaries rather than in the checkout root
+      #
+      # the runtime options are set here and only here: halt_on_error makes the non-zero exit the
+      # sanitizer takes on a finding the one the job fails on, rather than depending on a default,
+      # and print_stacktrace turns an undefined-behaviour diagnostic into a locatable one
       - name: test
-        run: ctest --preset linux-gcc-x64-test -C ${{ matrix.config }} --output-junit test-results.xml
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+          UBSAN_OPTIONS: print_stacktrace=1 halt_on_error=1
+        run: |
+          ctest --preset linux-gcc-x64${{ env.SAN }}-test -C ${{ matrix.config }} \
+            --output-junit test-results.xml
 
+      # the smoke runs are left to the plain pass: both have already run there, running them again
+      # under an instrument only doubles the job's time, and a timed benchmark would then measure
+      # the instrumentation rather than the library
       - name: smoke the benchmarks
+        if: matrix.san == ''
         run: ./build/linux-gcc-x64/bin/${{ matrix.config }}/msgbus_benchmark --benchmark_min_time=0.01s
 
       - name: smoke the examples
+        if: matrix.san == ''
         run: ./build/linux-gcc-x64/bin/${{ matrix.config }}/msgbus_example_basic_matching
 
       - name: upload test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results-linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}
-          path: build/linux-gcc-x64/test-results.xml
+          name: test-results-linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
+          path: build/linux-gcc-x64${{ env.SAN }}/test-results.xml
           if-no-files-found: warn
 
   linux-clang:
-    name: linux-clang-${{ matrix.version }}-${{ matrix.config_name }}
+    name: linux-clang-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         version: [21, 22, 23]
         config: [Debug, Release]
+        # the same four passes as the gcc job, x64 for the same reason. clang is the one toolchain
+        # that could also carry memory (msan), and it is deliberately absent: msan needs every
+        # dependency built with it, and pointing the preset at vcpkg's precompiled ports would
+        # report every string inside gtest and spdlog as uninitialised rather than find a defect
+        # in this library
+        san: ["", "asan", "tsan", "ubsan"]
         include:
           - config: Debug
             config_name: dbg
           - config: Release
             config_name: rel
+    env:
+      SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -246,31 +291,39 @@ jobs:
 
       - name: configure
         run: >
-          cmake --preset linux-clang-x64
+          cmake --preset linux-clang-x64${{ env.SAN }}
           -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
           "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
           $MSGBUS_CONFIGURE_FLAGS
 
       - name: build
-        run: cmake --build --preset linux-clang-x64-${{ matrix.config_name }}
+        run: cmake --build --preset linux-clang-x64-${{ matrix.config_name }}${{ env.SAN }}
 
       # --output-junit resolves a relative path against the build tree the test preset points at,
       # so the report lands beside the binaries rather than in the checkout root
       - name: test
-        run: ctest --preset linux-clang-x64-test -C ${{ matrix.config }} --output-junit test-results.xml
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+          UBSAN_OPTIONS: print_stacktrace=1 halt_on_error=1
+        run: |
+          ctest --preset linux-clang-x64${{ env.SAN }}-test -C ${{ matrix.config }} \
+            --output-junit test-results.xml
 
       - name: smoke the benchmarks
+        if: matrix.san == ''
         run: ./build/linux-clang-x64/bin/${{ matrix.config }}/msgbus_benchmark --benchmark_min_time=0.01s
 
       - name: smoke the examples
+        if: matrix.san == ''
         run: ./build/linux-clang-x64/bin/${{ matrix.config }}/msgbus_example_basic_matching
 
       - name: upload test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results-linux-clang-${{ matrix.version }}-${{ matrix.config_name }}
-          path: build/linux-clang-x64/test-results.xml
+          name: test-results-linux-clang-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
+          path: build/linux-clang-x64${{ env.SAN }}/test-results.xml
           if-no-files-found: warn
 
   clang-format:

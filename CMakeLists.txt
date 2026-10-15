@@ -68,7 +68,7 @@ if(${PROJECT_NAME}_SANITIZER)
             message(FATAL_ERROR
                 "MSVC supports ${PROJECT_NAME}_SANITIZER=address only; "
                 "'${${PROJECT_NAME}_SANITIZER}' is not a sanitizer cl.exe knows. "
-                "Use the linux-gcc-x64 / linux-clang-x64 presets for thread and undefined.")
+                "Use the linux-*-x64 presets for thread and undefined.")
         endif()
         target_compile_options(${PROJECT_NAME}_sanitizer INTERFACE /fsanitize=address /Zi)
         target_link_options(${PROJECT_NAME}_sanitizer INTERFACE /INCREMENTAL:NO)

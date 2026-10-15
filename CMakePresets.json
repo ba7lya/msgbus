@@ -65,7 +65,9 @@
       "inherits": "linux-clang-x64",
       "cacheVariables": {
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/thirdparty/vcpkg/triplets/community",
-        "VCPKG_TARGET_TRIPLET": "x86-linux"
+        "VCPKG_TARGET_TRIPLET": "x86-linux",
+        "CMAKE_C_FLAGS": "-m32",
+        "CMAKE_CXX_FLAGS": "-m32"
       }
     },
     {
@@ -151,7 +153,9 @@
       "inherits": "linux-gcc-x64",
       "cacheVariables": {
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/thirdparty/vcpkg/triplets/community",
-        "VCPKG_TARGET_TRIPLET": "x86-linux"
+        "VCPKG_TARGET_TRIPLET": "x86-linux",
+        "CMAKE_C_FLAGS": "-m32",
+        "CMAKE_CXX_FLAGS": "-m32"
       }
     },
     {
