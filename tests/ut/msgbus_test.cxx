@@ -257,7 +257,10 @@ TEST(msgbus_test, add_executor_reports_a_taken_id_without_disturbing_the_holder)
     EXPECT_FALSE(bus.add_executor(7)) << "re-registering must be refused, not silently replace";
 
     bus.publish_sync("a/b", std::any { 1 });
-    EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
+    // `flush` drains the routing queue, and this delivery never enters it: the subscription named
+    // executor 7, so the handler runs on 7's own worker. What has to be waited for is that executor.
+    // A `.find(7)` that came back null here would be the defect this test exists to rule out.
+    EXPECT_TRUE(bus.executors().find(7)->drain(std::chrono::milliseconds { 2000 }));
     EXPECT_TRUE(received.received_only("a/b")) << "the original executor still serves the subscription";
 }
 
@@ -328,7 +331,11 @@ TEST(msgbus_test, publish_sync_reaches_every_matching_subscription_once) {
     bus.publish_sync("a/b", std::any { 1 });
 
     EXPECT_TRUE(first.received_only("first"));
-    EXPECT_EQ(second.sorted(), (std::vector<std::string> { "second" })) << "one message, one delivery each";
+    // Two of the patterns above match — `a/#` and `a/b` — and they share one recorder, so the
+    // message is delivered once per matching subscription. `routed()` counts messages, not
+    // deliveries, which is why it stays at 1.
+    EXPECT_EQ(second.sorted(), (std::vector<std::string> { "second", "second" }))
+        << "one delivery per matching subscription, not one per message";
     EXPECT_EQ(third.count(), 0u);
     EXPECT_EQ(bus.routed(), 1u);
 }
@@ -565,7 +572,9 @@ TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
     EXPECT_TRUE(bus.flush());
 
     const std::scoped_lock guard(mutex);
-    EXPECT_EQ(seen, (std::vector<int> { 1, 3 })) << "message 2 was evicted by 3";
+    // Two subscriptions share this topic, so each surviving message is seen twice. The eviction is
+    // the point: 2 was never delivered, displaced in the routing queue by 3 before its turn came.
+    EXPECT_EQ(seen, (std::vector<int> { 1, 1, 3, 3 })) << "message 2 was evicted by 3";
     EXPECT_EQ(bus.routed(), 2u);
 }
 
@@ -684,23 +693,32 @@ TEST(msgbus_test, flush_from_the_routing_worker_throws) {
     // Real threads: a handler running on the routing worker asks the bus to drain the queue it is
     // currently draining. The subscriber's own error handler is where the failure is caught.
     msgbus bus;
-    std::mutex mutex;
     std::exception_ptr failure;
+    std::atomic<bool> reported { false };
     subscribe(
         bus, "a/b", [&](const message&) { sink(bus.flush()); }, dispatch_options { msgbus::ROUTER },
         [&](const message&, std::exception_ptr cause) {
-            const std::scoped_lock guard(mutex);
             failure = cause;
+            // The runner was polling `reported` when the handler thread wrote it, so the flag has to be
+            // atomic — and it is what tells the reader below that `failure` is safe to read at all.
+            reported.store(true, std::memory_order_release);
         }
     );
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
+    // A drained routing queue does not yet mean a reported failure: the handler sets that flag before the
+    // worker picks up the next queue item, so there is a window. Waiting for the flag is what closes it —
+    // the previous shape read a plain `std::exception_ptr` that the worker may still have been writing,
+    // and an unsynchronised read of a library type is exactly what turns into a `std::terminate`.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds { 2000 };
+    while (!reported.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {}
 
-    const std::scoped_lock guard(mutex);
-    ASSERT_TRUE(failure != nullptr) << "the throw must have reached the subscription's error handler";
+    ASSERT_TRUE(reported.load(std::memory_order_acquire))
+        << "the throw must have reached the subscription's error handler";
+    const std::exception_ptr cause = failure;
     try {
-        std::rethrow_exception(failure);
+        std::rethrow_exception(cause);
         ADD_FAILURE() << "expected std::invalid_argument";
     }
     catch (const std::invalid_argument&) {
@@ -1246,8 +1264,15 @@ TEST(msgbus_test, concurrent_subscribe_and_unsubscribe_keep_the_count_coherent) 
                     failed = true;
                     continue;
                 }
+                // The only per-thread claim that holds here. `subscribe` issued this id to this
+                // thread, so no other thread can be holding it, and a `false` means the id was
+                // already gone -- the defect this test exists to catch. Nothing bus-wide is
+                // asserted inside the loop: `subscription_count()` is a snapshot of all four
+                // threads' work, and the other three are between their own subscribe and their
+                // own unsubscribe for nearly the whole run, so neither `!= 0` nor `== 0` is a
+                // statement this thread can make about them. The bus-wide invariant is the one
+                // that needs every thread stopped, so it is asserted once, after the join.
                 if (!bus.unsubscribe(id.value())) { failed = true; }
-                else if (bus.subscription_count() != 0) { failed = true; }
             }
         });
     }

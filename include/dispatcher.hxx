@@ -234,6 +234,21 @@ inline std::exception_ptr dispatcher::dispatch(
             continue;
         }
 
+        // A delivery addressed to the executor **this thread is already running on** — a handler on
+        // executor X that publishes into a topic routed back to X, of which `msgbus::ROUTER` is the
+        // standing case — is run here rather than submitted. `submit` would run it inline anyway, but
+        // only after a second admission decision: it records the closure twice, once as this submit and
+        // once as the inline run, and once `close()` has cleared intake it refuses the closure with
+        // `CLOSED` — the executor's own worker judging work it was asked to hand itself while it is
+        // draining. Neither is what a hand-over should cost. Nothing is checked under the registry's
+        // lock beyond what `find` already did, and any handler's own exception stays on this thread,
+        // where the failure recovery below can still reach a caller.
+        if (exec->is_on_worker_thread()) {
+            const std::exception_ptr failure = router::deliver(route, *msg);
+            if (failure && !first) { first = failure; }
+            continue;
+        }
+
         // The failure recovery lives in the closure, not here: by the time the worker runs it, `dispatch`
         // has long returned, and `on_failure` is the only channel left.
         const submit_status outcome = exec->submit(

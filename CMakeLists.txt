@@ -51,6 +51,14 @@ target_include_directories(${PROJECT_NAME} INTERFACE ${PROJECT_SOURCE_DIR}/inclu
 target_link_libraries(${PROJECT_NAME} INTERFACE spdlog::spdlog)
 target_compile_features(${PROJECT_NAME} INTERFACE cxx_std_23)
 target_compile_options(${PROJECT_NAME} INTERFACE "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
+# `/EHsc` is not optional here. `executor` runs its handlers on a `std::jthread` worker where a
+# user handler may throw, and `drain`/`flush` deliberately throw `std::invalid_argument` when
+# called from that same worker -- so the library's own contract is "a C++ exception crosses a
+# frame and is caught". Without unwind semantics MSVC still compiles (warning C4530 from
+# `chrono`/`__msvc_ostream.hpp` is the only hint) and then aborts at the first throw with a
+# `_Throw_Cpp_error` rethrow inside the unwind path, which is what turned the unit-test suite
+# red on `win-msvc-2026-dbg` while every other configuration stayed green.
+target_compile_options(${PROJECT_NAME} INTERFACE "$<$<CXX_COMPILER_ID:MSVC>:/EHsc>")
 
 # --- sanitizer flags ---
 # A dedicated INTERFACE target, never linked by ${PROJECT_NAME} itself: this library is
