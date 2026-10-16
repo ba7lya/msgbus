@@ -52,17 +52,15 @@ env:
     -Dba7lya.msgbus_BUILD_BENCHMARK=ON
     -Dba7lya.msgbus_BUILD_EXAMPLE=ON
 
-# Every `uses:` below still names a moving tag. Pinning them to a 40-character commit SHA is the
-# standard supply-chain hardening for actions that touch the build environment, and is worth doing
-# for at least run-vcpkg, msvc-dev-cmd and checkout -- it was left to tags here only because the
-# SHAs have to be read from the repos rather than guessed. `gh api` gives them:
+# Every `uses:` below names a moving tag rather than a 40-character commit SHA. Pinning to a SHA is
+# the usual supply-chain hardening, and it is a deliberate decision to skip it here: a pinned SHA
+# only stays current if something bumps it, and without Dependabot that something is a human reading
+# about a CVE in a third-party action. A tag moves under exactly the people who watch releases, so
+# an unmaintained pin is less safe than the tag it replaced, not more. Revisit if the trade-off
+# changes -- the SHAs are read from the repos rather than guessed:
 #
 #   gh api repos/actions/checkout/git/ref/tags/v7 --jq .object.sha
 #   gh api repos/lukka/run-vcpkg/git/ref/tags/v11 --jq .object.sha
-#
-# and Dependabot keeps them current once they are in place:
-#
-#   .github/dependabot.yml -> package-ecosystem: github-actions, directory: /
 jobs:
   win-msvc:
     name: win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
