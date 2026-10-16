@@ -580,11 +580,19 @@ TEST(router_test, concurrent_subscribe_and_unsubscribe_keep_the_id_sets_coherent
     });
 
     // Waits for the first id to exist, so that the cancellation below is guaranteed to hit a live
-    // subscription rather than racing the thread that has not started yet. From then on it hammers
-    // the same id, which after the first success is a no-op — the point is that neither thread ever
-    // disturbs the other.
+    // subscription rather than racing the thread that has not started yet: `issued` is bumped only
+    // after `subscribe` returned, and only this thread ever removes id 1, so observing a non-zero
+    // count is observing id 1 as live and the call cannot miss.
+    //
+    // That first cancellation is deliberately outside the loop below. Leaving it inside makes the
+    // test depend on the adder still running when this thread is finally scheduled -- in Release the
+    // adder gets through all ROUNDS rounds and sets `stop` first, the loop body then never executes,
+    // and the test goes red over a cancellation that was never attempted rather than over anything
+    // it means to assert. From the second call on it hammers the same id, which by then is a no-op;
+    // the point is that neither thread ever disturbs the other.
     std::thread canceller([&bus, &stop, &issued, &cancelled_the_first] {
         while (issued.load() == 0) {}
+        cancelled_the_first = bus.unsubscribe(1);
         while (!stop) {
             if (bus.unsubscribe(1)) { cancelled_the_first = true; }
         }
