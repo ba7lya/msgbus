@@ -5,7 +5,7 @@
 /// queue, re-entrant inline submits, the exception sink, and the shutdown and drain contracts.
 /// @version 0.1
 /// @date 2026-10-15
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 

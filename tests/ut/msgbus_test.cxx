@@ -6,7 +6,7 @@
 /// counters, and shutdown.
 /// @version 0.1
 /// @date 2026-10-16
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 
@@ -33,6 +33,7 @@
 #include "executor.hxx"
 #include "msgbus.hxx"
 #include "msgbus_base.hxx"
+#include "subscription.hxx"
 
 namespace ba7lya::msgbus {
 
@@ -200,15 +201,60 @@ message make_message(std::string_view topic, int payload = 0, std::string source
     };
 }
 
-/// @brief Registers `callback`, failing the test if the pattern is rejected.
-/// @return the subscription id, or 0 after a failure
-subscription_id subscribe(
-    msgbus& bus, std::string_view pattern, handler callback, dispatch_options options = {}, error_handler on_error = {}
-) {
-    const auto registered = bus.subscribe(pattern, std::move(callback), options, std::move(on_error));
-    EXPECT_TRUE(registered.has_value()) << "on " << pattern;
-    return registered.value_or(0);
-}
+///
+/// @brief What a case arms: every handle it registered on a bus, held until the holder dies.
+/// @details `subscribe` returns an owning handle, and a handle destroyed at the end of its statement
+/// cancels the subscription right there. A case that armed a subscription and then published — leaving
+/// the result as a bare statement — would therefore be arming nothing, and the whole file would go on
+/// passing while testing an empty table. Parking the handles here for the length of the case is what
+/// makes `armed.add(...)` as a statement mean "registered, and it stays registered".
+///
+/// The declaration order matters: a holder is declared after the bus it registers on and destroyed
+/// before it, so every handle reaches its router while the router is still alive.
+///
+class registrations {
+public:
+    registrations() = default;
+
+    registrations(const registrations&) = delete;
+    registrations& operator=(const registrations&) = delete;
+    registrations(registrations&&) = delete;
+    registrations& operator=(registrations&&) = delete;
+
+    /// @brief Cancels every subscription still held, in reverse order of registration.
+    ~registrations() = default;
+
+    /// @brief Registers `callback` for `pattern`, keeping the handle alive here.
+    /// @return the id the bus issued, or 0 if the pattern was rejected
+    /// @note Not `[[nodiscard]]`: most cases arm a subscription for its effect and never look at the
+    /// id. The failure it could report is the rejected pattern, and that has already been asserted on
+    /// — a case that means to assert on the rejection calls the bus's own `subscribe` instead.
+    /// @note The bus issues the id and the router stores it, so the value returned here is the same
+    /// one `resolve` reports for this registration and the one `unsubscribe` takes.
+    subscription_id add(
+        msgbus_base& bus, std::string_view pattern, handler callback, dispatch_options options = {},
+        error_handler on_error = {}
+    ) {
+        auto registered = bus.subscribe(pattern, std::move(callback), options, std::move(on_error));
+        EXPECT_TRUE(registered.has_value()) << "on " << pattern;
+        if (!registered.has_value()) { return 0; }
+
+        subscription handle = *std::move(registered);
+        const subscription_id id = handle.id();
+        handles_.push_back(std::move(handle));
+        return id;
+    }
+
+    /// @brief How many handles are still held, which is how many are still live.
+    [[nodiscard]]
+    std::size_t count() const noexcept {
+        return handles_.size();
+    }
+
+private:
+    /// @brief The handles, one per registration, in the order they were armed.
+    std::vector<subscription> handles_;
+};
 
 /// @brief A bus configuration with a bound and a policy, and no error sink.
 [[nodiscard]]
@@ -249,10 +295,11 @@ TEST(msgbus_test, add_executor_refuses_the_inline_id_and_the_routing_id) {
 
 TEST(msgbus_test, add_executor_reports_a_taken_id_without_disturbing_the_holder) {
     msgbus bus;
+    registrations armed;
     recorder received;
 
     ASSERT_TRUE(bus.add_executor(7));
-    subscribe(bus, "a/b", received.callback(), dispatch_options { 7 });
+    armed.add(bus, "a/b", received.callback(), dispatch_options { 7 });
 
     EXPECT_FALSE(bus.add_executor(7)) << "re-registering must be refused, not silently replace";
 
@@ -297,8 +344,9 @@ TEST(msgbus_test, subscribe_reports_a_rejected_pattern_by_value) {
 
 TEST(msgbus_test, publish_sync_runs_an_inline_handler_before_it_returns) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback());
+    armed.add(bus, "a/b", received.callback());
 
     bus.publish_sync("a/b", std::any { 42 });
 
@@ -309,8 +357,9 @@ TEST(msgbus_test, publish_sync_runs_an_inline_handler_before_it_returns) {
 
 TEST(msgbus_test, publish_sync_runs_the_handler_on_the_callers_thread) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback());
+    armed.add(bus, "a/b", received.callback());
 
     bus.publish_sync("a/b", std::any { 42 });
 
@@ -320,13 +369,14 @@ TEST(msgbus_test, publish_sync_runs_the_handler_on_the_callers_thread) {
 
 TEST(msgbus_test, publish_sync_reaches_every_matching_subscription_once) {
     msgbus bus;
+    registrations armed;
     recorder first;
     recorder second;
     recorder third;
-    subscribe(bus, "a/+", first.callback("first"));
-    subscribe(bus, "a/#", second.callback("second"));
-    subscribe(bus, "a/b", second.callback("second"));
-    subscribe(bus, "b/#", third.callback("third"));
+    armed.add(bus, "a/+", first.callback("first"));
+    armed.add(bus, "a/#", second.callback("second"));
+    armed.add(bus, "a/b", second.callback("second"));
+    armed.add(bus, "b/#", third.callback("third"));
 
     bus.publish_sync("a/b", std::any { 1 });
 
@@ -342,11 +392,12 @@ TEST(msgbus_test, publish_sync_reaches_every_matching_subscription_once) {
 
 TEST(msgbus_test, publish_sync_carries_the_messages_provenance_to_the_handler) {
     msgbus bus;
+    registrations armed;
     std::mutex mutex;
     std::string source;
     std::uint64_t seq = 0;
     int payload = 0;
-    subscribe(bus, "a/b", [&](const message& msg) {
+    armed.add(bus, "a/b", [&](const message& msg) {
         const std::scoped_lock guard(mutex);
         source = msg.meta_.source_;
         seq = msg.meta_.seq_;
@@ -363,8 +414,9 @@ TEST(msgbus_test, publish_sync_carries_the_messages_provenance_to_the_handler) {
 
 TEST(msgbus_test, publish_sync_matches_a_subtree_including_its_own_node) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "device/#", received.callback());
+    armed.add(bus, "device/#", received.callback());
 
     bus.publish_sync("device", std::any { 1 });
     bus.publish_sync("device/room1", std::any { 2 });
@@ -376,8 +428,9 @@ TEST(msgbus_test, publish_sync_matches_a_subtree_including_its_own_node) {
 
 TEST(msgbus_test, publish_sync_throws_on_a_malformed_topic_and_routes_nothing) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/#", received.callback());
+    armed.add(bus, "a/#", received.callback());
 
     EXPECT_THROW(bus.publish_sync("a//b", std::any { 1 }), std::invalid_argument);
     EXPECT_THROW(bus.publish_sync("", std::any { 1 }), std::invalid_argument);
@@ -388,8 +441,9 @@ TEST(msgbus_test, publish_sync_throws_on_a_malformed_topic_and_routes_nothing) {
 
 TEST(msgbus_test, publish_sync_rejects_a_wildcard_in_the_published_topic) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/#", received.callback());
+    armed.add(bus, "a/#", received.callback());
 
     EXPECT_THROW(bus.publish_sync("a/+", std::any { 1 }), std::invalid_argument);
     EXPECT_THROW(bus.publish_sync("a/#", std::any { 1 }), std::invalid_argument);
@@ -399,9 +453,10 @@ TEST(msgbus_test, publish_sync_rejects_a_wildcard_in_the_published_topic) {
 
 TEST(msgbus_test, publish_sync_is_accepted_through_a_base_reference) {
     msgbus bus;
+    registrations armed;
     recorder received;
     msgbus_base& abstract = bus;
-    subscribe(bus, "a/b", received.callback());
+    armed.add(bus, "a/b", received.callback());
 
     abstract.publish_sync("a/b", std::any { 1 });
 
@@ -414,9 +469,10 @@ TEST(msgbus_test, publish_async_returns_before_the_handler_has_run) {
     // Real threads: the routing worker is gated inside the handler, so the publisher demonstrably does
     // not wait for it.
     msgbus bus;
+    registrations armed;
     gate g;
     std::atomic<bool> ran { false };
-    subscribe(
+    armed.add(
         bus, "a/b",
         [&](const message&) {
             g.hold();
@@ -437,8 +493,9 @@ TEST(msgbus_test, publish_async_returns_before_the_handler_has_run) {
 
 TEST(msgbus_test, publish_async_routes_the_message_on_the_routing_worker) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
@@ -454,8 +511,9 @@ TEST(msgbus_test, publish_async_runs_an_inline_subscription_on_the_routing_worke
     // The worker routes the message and finds a delivery that named no executor: it runs there, on the
     // worker, because the worker is the thread that reached it.
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback());
+    armed.add(bus, "a/b", received.callback());
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
@@ -500,9 +558,10 @@ TEST(msgbus_test, publish_async_is_rejected_after_the_bus_is_released) {
 
 TEST(msgbus_test, publish_async_carries_the_messages_provenance_to_the_handler) {
     msgbus bus;
+    registrations armed;
     std::mutex mutex;
     std::string source;
-    subscribe(bus, "a/b", [&](const message& msg) {
+    armed.add(bus, "a/b", [&](const message& msg) {
         const std::scoped_lock guard(mutex);
         source = msg.meta_.source_;
     });
@@ -519,9 +578,10 @@ TEST(msgbus_test, publish_async_carries_the_messages_provenance_to_the_handler) 
 TEST(msgbus_test, publish_async_rejects_when_the_routing_queue_is_full_under_drop_new) {
     // Real threads: a gated handler occupies the worker, so the one-slot queue can be filled exactly.
     msgbus bus(bounded(1, back_pressure::DROP_NEW));
+    registrations armed;
     gate g;
     std::atomic<int> ran { 0 };
-    subscribe(
+    armed.add(
         bus, "a/b",
         [&](const message&) {
             g.hold();
@@ -545,6 +605,7 @@ TEST(msgbus_test, publish_async_rejects_when_the_routing_queue_is_full_under_dro
 TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
     // Real threads: the evicted message is the one that would have run second.
     msgbus bus(bounded(1, back_pressure::DROP_OLDEST));
+    registrations armed;
     gate g;
     std::mutex mutex;
     std::vector<int> seen;
@@ -552,7 +613,7 @@ TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
         const std::scoped_lock guard(mutex);
         seen.push_back(std::any_cast<int>(msg.payload_));
     };
-    subscribe(
+    armed.add(
         bus, "a/b",
         [&](const message& msg) {
             g.hold();
@@ -560,7 +621,7 @@ TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
         },
         dispatch_options { msgbus::ROUTER }
     );
-    subscribe(bus, "a/b", record, dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/b", record, dispatch_options { msgbus::ROUTER });
 
     EXPECT_EQ(bus.publish_async("a/b", std::any { 1 }), publish_status::ACCEPTED);
     g.wait_entered();
@@ -581,9 +642,10 @@ TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
 TEST(msgbus_test, publish_async_under_block_never_rejects_a_full_queue) {
     // Real threads: the gated worker holds the queue full while a publisher parks in publish_async.
     msgbus bus(bounded(1, back_pressure::BLOCK));
+    registrations armed;
     gate g;
     std::atomic<int> ran { 0 };
-    subscribe(
+    armed.add(
         bus, "a/b",
         [&](const message&) {
             g.hold();
@@ -618,9 +680,10 @@ TEST(msgbus_test, publish_async_from_the_routing_worker_is_rejected_when_the_que
     // draining, which is full. Running inline is impossible for a deferred closure and queuing would
     // deadlock, so the refusal is the documented answer.
     msgbus bus(bounded(1, back_pressure::DROP_NEW));
+    registrations armed;
     gate g;
     std::atomic<publish_status> nested { publish_status::ACCEPTED };
-    subscribe(
+    armed.add(
         bus, "a/b",
         [&](const message&) {
             g.hold();
@@ -650,8 +713,9 @@ TEST(msgbus_test, flush_on_an_idle_bus_is_true_at_once) {
 
 TEST(msgbus_test, flush_waits_until_the_queued_message_has_been_routed) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
 
     for (int i = 0; i < 64; ++i) { EXPECT_EQ(bus.publish_async("a/b", std::any { i }), publish_status::ACCEPTED); }
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 5000 }));
@@ -664,11 +728,12 @@ TEST(msgbus_test, flush_does_not_wait_for_an_executor_thread) {
     // Real threads: the delivery has reached the executor, which is holding it, and that is as far as
     // flush's promise goes.
     msgbus bus;
+    registrations armed;
     gate g;
     ASSERT_TRUE(bus.add_executor(7));
     recorder received;
     std::atomic<bool> entered { false };
-    subscribe(
+    armed.add(
         bus, "a/b",
         [&](const message& msg) {
             entered = true;
@@ -693,9 +758,10 @@ TEST(msgbus_test, flush_from_the_routing_worker_throws) {
     // Real threads: a handler running on the routing worker asks the bus to drain the queue it is
     // currently draining. The subscriber's own error handler is where the failure is caught.
     msgbus bus;
+    registrations armed;
     std::exception_ptr failure;
     std::atomic<bool> reported { false };
-    subscribe(
+    armed.add(
         bus, "a/b", [&](const message&) { sink(bus.flush()); }, dispatch_options { msgbus::ROUTER },
         [&](const message&, std::exception_ptr cause) {
             failure = cause;
@@ -732,11 +798,12 @@ TEST(msgbus_test, flush_from_the_routing_worker_throws) {
 
 TEST(msgbus_test, a_handler_named_by_dispatch_options_runs_on_that_executors_thread) {
     msgbus bus;
+    registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
     recorder on_executor;
     recorder on_router;
-    subscribe(bus, "a/#", on_executor.callback("executor"), dispatch_options { 7 });
-    subscribe(bus, "a/#", on_router.callback("router"), dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/#", on_executor.callback("executor"), dispatch_options { 7 });
+    armed.add(bus, "a/#", on_router.callback("router"), dispatch_options { msgbus::ROUTER });
 
     bus.publish_sync("a/b", std::any { 1 });
     EXPECT_TRUE(bus.executors().find(7)->drain());
@@ -753,9 +820,10 @@ TEST(msgbus_test, a_handler_named_by_dispatch_options_runs_on_that_executors_thr
 
 TEST(msgbus_test, every_delivery_to_one_executor_runs_on_one_thread) {
     msgbus bus;
+    registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
     recorder received;
-    subscribe(bus, "a/#", received.callback(), dispatch_options { 7 });
+    armed.add(bus, "a/#", received.callback(), dispatch_options { 7 });
 
     for (int i = 0; i < 32; ++i) { bus.publish_sync("a/b", std::any { i }); }
     EXPECT_TRUE(bus.executors().find(7)->drain());
@@ -767,10 +835,11 @@ TEST(msgbus_test, every_delivery_to_one_executor_runs_on_one_thread) {
 TEST(msgbus_test, publish_sync_does_not_wait_for_an_executor_bound_delivery) {
     // Real threads: only the calling thread's handlers are complete when publish_sync returns.
     msgbus bus;
+    registrations armed;
     gate g;
     ASSERT_TRUE(bus.add_executor(7));
     std::atomic<bool> ran { false };
-    subscribe(
+    armed.add(
         bus, "a/b",
         [&](const message&) {
             g.hold();
@@ -794,8 +863,9 @@ TEST(msgbus_test, a_subscription_naming_an_unregistered_executor_is_dropped_and_
     failure_log log;
     settings.on_exception_ = log.sink();
     msgbus bus(std::move(settings));
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback(), dispatch_options { 42 });
+    armed.add(bus, "a/b", received.callback(), dispatch_options { 42 });
 
     bus.publish_sync("a/b", std::any { 1 });
 
@@ -807,9 +877,10 @@ TEST(msgbus_test, a_subscription_naming_an_unregistered_executor_is_dropped_and_
 
 TEST(msgbus_test, removing_an_executor_makes_its_subscriptions_undeliverable) {
     msgbus bus;
+    registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
     recorder received;
-    subscribe(bus, "a/b", received.callback(), dispatch_options { 7 });
+    armed.add(bus, "a/b", received.callback(), dispatch_options { 7 });
     ASSERT_TRUE(bus.remove_executor(7));
 
     bus.publish_sync("a/b", std::any { 1 });
@@ -820,13 +891,14 @@ TEST(msgbus_test, removing_an_executor_makes_its_subscriptions_undeliverable) {
 
 TEST(msgbus_test, one_topic_can_reach_an_inline_and_an_executor_bound_subscriber_together) {
     msgbus bus;
+    registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
     recorder inline_sub;
     recorder executor_sub;
     recorder worker_sub;
-    subscribe(bus, "a/b", inline_sub.callback("inline"));
-    subscribe(bus, "a/b", executor_sub.callback("executor"), dispatch_options { 7 });
-    subscribe(bus, "a/b", worker_sub.callback("worker"), dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/b", inline_sub.callback("inline"));
+    armed.add(bus, "a/b", executor_sub.callback("executor"), dispatch_options { 7 });
+    armed.add(bus, "a/b", worker_sub.callback("worker"), dispatch_options { msgbus::ROUTER });
 
     bus.publish_sync("a/b", std::any { 1 });
 
@@ -843,16 +915,18 @@ TEST(msgbus_test, one_topic_can_reach_an_inline_and_an_executor_bound_subscriber
 
 TEST(msgbus_test, a_synchronous_failure_with_no_error_handler_reaches_the_publisher) {
     msgbus bus;
-    subscribe(bus, "boom", [](const message&) { throw std::runtime_error("bang"); });
+    registrations armed;
+    armed.add(bus, "boom", [](const message&) { throw std::runtime_error("bang"); });
 
     EXPECT_THROW(bus.publish_sync("boom", std::any { 1 }), std::runtime_error);
 }
 
 TEST(msgbus_test, a_synchronous_failure_with_an_error_handler_is_consumed_there) {
     msgbus bus;
+    registrations armed;
     std::mutex mutex;
     std::size_t count = 0;
-    subscribe(
+    armed.add(
         bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, {},
         [&](const message& msg, std::exception_ptr cause) {
             const std::scoped_lock guard(mutex);
@@ -872,9 +946,10 @@ TEST(msgbus_test, a_synchronous_failure_with_an_error_handler_is_consumed_there)
 
 TEST(msgbus_test, a_synchronous_failure_does_not_skip_the_other_subscribers) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", [](const message&) { throw std::runtime_error("bang"); });
-    subscribe(bus, "a/b", received.callback());
+    armed.add(bus, "a/b", [](const message&) { throw std::runtime_error("bang"); });
+    armed.add(bus, "a/b", received.callback());
 
     EXPECT_THROW(bus.publish_sync("a/b", std::any { 1 }), std::runtime_error);
 
@@ -887,7 +962,8 @@ TEST(msgbus_test, an_asynchronous_failure_with_no_error_handler_reaches_the_erro
     failure_log log;
     settings.on_exception_ = log.sink();
     msgbus bus(std::move(settings));
-    subscribe(
+    registrations armed;
+    armed.add(
         bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { msgbus::ROUTER }
     );
 
@@ -903,8 +979,9 @@ TEST(msgbus_test, an_asynchronous_failure_on_an_executor_thread_reaches_the_erro
     failure_log log;
     settings.on_exception_ = log.sink();
     msgbus bus(std::move(settings));
+    registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
-    subscribe(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { 7 });
+    armed.add(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { 7 });
 
     EXPECT_EQ(bus.publish_async("boom", std::any { 1 }), publish_status::ACCEPTED);
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
@@ -918,9 +995,10 @@ TEST(msgbus_test, an_executor_bound_failure_goes_to_its_own_error_handler_not_th
     failure_log log;
     settings.on_exception_ = log.sink();
     msgbus bus(std::move(settings));
+    registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
     std::atomic<int> handled { 0 };
-    subscribe(
+    armed.add(
         bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { 7 },
         [&](const message&, std::exception_ptr) { ++handled; }
     );
@@ -939,11 +1017,12 @@ TEST(msgbus_test, an_error_sink_that_throws_does_not_take_the_worker_down) {
     msgbus::config settings;
     settings.on_exception_ = [](std::exception_ptr) { throw std::logic_error("sink failed"); };
     msgbus bus(std::move(settings));
-    subscribe(
+    registrations armed;
+    armed.add(
         bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { msgbus::ROUTER }
     );
     recorder received;
-    subscribe(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
 
     EXPECT_EQ(bus.publish_async("boom", std::any { 1 }), publish_status::ACCEPTED);
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
@@ -958,9 +1037,10 @@ TEST(msgbus_test, the_error_sink_is_isolated_from_a_failure_it_cannot_handle) {
     failure_log log;
     settings.on_exception_ = log.sink();
     msgbus bus(std::move(settings));
+    registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
-    subscribe(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { 7 });
-    subscribe(bus, "unmapped", [](const message&) {}, dispatch_options { 42 });
+    armed.add(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { 7 });
+    armed.add(bus, "unmapped", [](const message&) {}, dispatch_options { 42 });
 
     bus.publish_sync("unmapped", std::any { 1 });
     EXPECT_EQ(bus.dropped(), 1u) << "an unregistered executor is reported, not thrown";
@@ -975,8 +1055,9 @@ TEST(msgbus_test, the_error_sink_is_isolated_from_a_failure_it_cannot_handle) {
 
 TEST(msgbus_test, routed_counts_every_message_the_worker_finished) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/#", received.callback(), dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/#", received.callback(), dispatch_options { msgbus::ROUTER });
 
     for (int i = 0; i < 100; ++i) { EXPECT_EQ(bus.publish_async("a/b", std::any { i }), publish_status::ACCEPTED); }
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 5000 }));
@@ -1002,10 +1083,11 @@ TEST(msgbus_test, routed_counts_a_synchronous_publish_that_nothing_matched) {
 
 TEST(msgbus_test, subscription_count_and_empty_track_registration) {
     msgbus bus;
+    registrations armed;
     recorder received;
 
     ASSERT_TRUE(bus.empty());
-    const subscription_id id = subscribe(bus, "a/b", received.callback());
+    const subscription_id id = armed.add(bus, "a/b", received.callback());
     EXPECT_EQ(bus.subscription_count(), 1u);
     EXPECT_FALSE(bus.empty());
 
@@ -1019,8 +1101,9 @@ TEST(msgbus_test, subscription_count_and_empty_track_registration) {
 
 TEST(msgbus_test, an_unsubscribed_id_still_holds_a_second_pattern_of_its_own) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    const subscription_id id = subscribe(bus, "a/#", received.callback());
+    const subscription_id id = armed.add(bus, "a/#", received.callback());
 
     bus.publish_sync("a/b", std::any { 1 });
     EXPECT_TRUE(bus.unsubscribe(id));
@@ -1034,10 +1117,11 @@ TEST(msgbus_test, a_cancelled_subscription_does_not_see_a_message_queued_before_
     // Real threads: the routing worker is gated on an earlier message, so the target message is still in
     // the queue when the subscription is cancelled — and resolution happens when the worker reaches it.
     msgbus bus;
+    registrations armed;
     gate g;
-    subscribe(bus, "gate", [&g](const message&) { g.hold(); }, dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "gate", [&g](const message&) { g.hold(); }, dispatch_options { msgbus::ROUTER });
     recorder received;
-    const subscription_id id = subscribe(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
+    const subscription_id id = armed.add(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
 
     EXPECT_EQ(bus.publish_async("gate", std::any { 1 }), publish_status::ACCEPTED);
     g.wait_entered();
@@ -1053,8 +1137,9 @@ TEST(msgbus_test, a_cancelled_subscription_does_not_see_a_message_queued_before_
 TEST(msgbus_test, a_handler_may_subscribe_from_within_a_delivery) {
     // The router's lock is released before any handler runs, so this cannot deadlock.
     msgbus bus;
+    registrations armed;
     recorder late;
-    subscribe(bus, "a/b", [&](const message&) { sink(subscribe(bus, "a/c", late.callback())); });
+    armed.add(bus, "a/b", [&](const message&) { sink(armed.add(bus, "a/c", late.callback())); });
 
     bus.publish_sync("a/b", std::any { 1 });
     EXPECT_EQ(late.count(), 0u);
@@ -1066,9 +1151,10 @@ TEST(msgbus_test, a_handler_may_subscribe_from_within_a_delivery) {
 
 TEST(msgbus_test, a_handler_may_unsubscribe_itself_from_within_a_delivery) {
     msgbus bus;
+    registrations armed;
     recorder received;
     subscription_id id = 0;
-    id = subscribe(bus, "a/b", [&](const message& msg) {
+    id = armed.add(bus, "a/b", [&](const message& msg) {
         received.callback()(msg);
         EXPECT_TRUE(bus.unsubscribe(id));
     });
@@ -1093,8 +1179,9 @@ TEST(msgbus_test, release_is_idempotent) {
 
 TEST(msgbus_test, release_routes_every_message_accepted_before_it) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
 
     for (int i = 0; i < 32; ++i) { EXPECT_EQ(bus.publish_async("a/b", std::any { i }), publish_status::ACCEPTED); }
 
@@ -1106,10 +1193,11 @@ TEST(msgbus_test, release_routes_every_message_accepted_before_it) {
 
 TEST(msgbus_test, release_waits_for_a_delivery_already_handed_to_another_executor) {
     msgbus bus;
+    registrations armed;
     gate g;
     ASSERT_TRUE(bus.add_executor(7));
     std::atomic<bool> ran { false };
-    subscribe(
+    armed.add(
         bus, "a/b",
         [&](const message&) {
             g.hold();
@@ -1128,15 +1216,24 @@ TEST(msgbus_test, release_waits_for_a_delivery_already_handed_to_another_executo
     EXPECT_TRUE(ran.load()) << "release joins every executor, not just the routing worker";
 }
 
-TEST(msgbus_test, the_destructor_releases_the_bus_and_routes_what_was_accepted) {
+// The destructor's own drain cannot be observed on its own here. `release()` routes what was
+// accepted to the subscriptions that are live when it runs, and a registration is live only while
+// its handle is — `~subscription` cancels it, and `subscription`'s contract forbids a handle
+// outliving its owner. A handle declared in this scope is therefore already gone by the time
+// `~msgbus` runs, so the barrier has to be taken while the handle is still alive. What this case
+// pins down is the other half: the destructor that follows a `release()` neither routes a message
+// a second time nor loses one.
+TEST(msgbus_test, the_destructor_after_a_release_routes_nothing_a_second_time) {
     std::atomic<int> ran { 0 };
     {
         msgbus bus;
-        subscribe(bus, "a/b", [&ran](const message&) { ++ran; }, dispatch_options { msgbus::ROUTER });
+        registrations armed;
+        armed.add(bus, "a/b", [&ran](const message&) { ++ran; }, dispatch_options { msgbus::ROUTER });
         for (int i = 0; i < 16; ++i) { EXPECT_EQ(bus.publish_async("a/b", std::any { i }), publish_status::ACCEPTED); }
+        bus.release();
     }
 
-    EXPECT_EQ(ran.load(), 16);
+    EXPECT_EQ(ran.load(), 16) << "each accepted publish reaches the handler exactly once";
 }
 
 TEST(msgbus_test, a_bus_is_neither_copyable_nor_movable) {
@@ -1151,8 +1248,9 @@ TEST(msgbus_test, a_bus_is_neither_copyable_nor_movable) {
 
 TEST(msgbus_test, concurrent_synchronous_publishers_are_all_routed) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback());
+    armed.add(bus, "a/b", received.callback());
     constexpr int THREADS = 4;
     constexpr int PER_THREAD = 250;
 
@@ -1171,8 +1269,9 @@ TEST(msgbus_test, concurrent_synchronous_publishers_are_all_routed) {
 
 TEST(msgbus_test, concurrent_asynchronous_publishers_are_all_routed) {
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
     constexpr int THREADS = 4;
     constexpr int PER_THREAD = 250;
 
@@ -1205,9 +1304,11 @@ TEST(msgbus_test, a_publisher_racing_a_subscription_never_sees_a_half_registered
 
     std::thread registrar([&bus, &delivered, &stop] {
         while (!stop.load()) {
-            const auto id = bus.subscribe("a/b", [&delivered](const message&) { ++delivered; });
+            auto id = bus.subscribe("a/b", [&delivered](const message&) { ++delivered; });
             if (!id) { continue; }
-            sink(bus.unsubscribe(id.value()));
+            // Cancelled through the handle rather than through a second bus call: the id belongs to
+            // the registration, and the handle is what owns it.
+            sink(id->cancel());
         }
     });
 
@@ -1223,8 +1324,9 @@ TEST(msgbus_test, a_publisher_racing_release_is_either_accepted_or_rejected) {
     // Real threads: no asynchronous publish may be lost — an ACCEPTED one must be routed, since release
     // drains before it returns.
     msgbus bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
+    armed.add(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
     constexpr int ROUNDS = 400;
     std::atomic<int> accepted { 0 };
     std::atomic<int> rejected { 0 };
@@ -1259,20 +1361,20 @@ TEST(msgbus_test, concurrent_subscribe_and_unsubscribe_keep_the_count_coherent) 
     for (int t = 0; t < THREADS; ++t) {
         workers.emplace_back([&bus, &failed] {
             for (int i = 0; i < PER_THREAD; ++i) {
-                const auto id = bus.subscribe("a/b", [](const message&) {});
+                auto id = bus.subscribe("a/b", [](const message&) {});
                 if (!id) {
                     failed = true;
                     continue;
                 }
-                // The only per-thread claim that holds here. `subscribe` issued this id to this
-                // thread, so no other thread can be holding it, and a `false` means the id was
-                // already gone -- the defect this test exists to catch. Nothing bus-wide is
+                // The only per-thread claim that holds here. `subscribe` issued this handle to this
+                // thread, so no other thread can be holding it, and a `false` means the registration
+                // was already gone -- the defect this test exists to catch. Nothing bus-wide is
                 // asserted inside the loop: `subscription_count()` is a snapshot of all four
                 // threads' work, and the other three are between their own subscribe and their
-                // own unsubscribe for nearly the whole run, so neither `!= 0` nor `== 0` is a
+                // own cancel for nearly the whole run, so neither `!= 0` nor `== 0` is a
                 // statement this thread can make about them. The bus-wide invariant is the one
                 // that needs every thread stopped, so it is asserted once, after the join.
-                if (!bus.unsubscribe(id.value())) { failed = true; }
+                if (!id->cancel()) { failed = true; }
             }
         });
     }

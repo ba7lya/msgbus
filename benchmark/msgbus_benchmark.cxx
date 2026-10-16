@@ -1,3 +1,12 @@
+///
+/// @file msgbus_benchmark.cxx
+/// @author BA7LYA (1042140025@qq.com)
+/// @brief The bus, measured: what parsing, matching, resolving and each publish entry point
+/// cost a gateway's own publishing threads.
+/// @version 0.1
+/// @date 2026-10-17
+/// @copyright Copyright (c) 2026 BA7LYA
+///
 // SPDX-License-Identifier: MIT
 //
 // The bus, measured.
@@ -27,6 +36,7 @@
 #include "layer_matcher.hxx"
 #include "msgbus.hxx"
 #include "router.hxx"
+#include "subscription.hxx"
 
 namespace ba7lya::msgbus::bench {
 
@@ -54,16 +64,26 @@ std::any sample_payload(std::uint64_t seed) {
 /// misbehaved, so it is reported rather than asserted away: a silently empty fan-out would turn
 /// every number in this file into a measurement of the parse alone.
 ///
+/// The handles are collected before the function returns rather than left as loop temporaries, and
+/// that is not tidiness: `subscribe` returns a handle that cancels its subscription when destroyed,
+/// so a temporary dropped at the end of its iteration -- and every one of them would be, by the time
+/// this loop finished -- leaves the bus with an empty table and the benchmark measuring nothing. The
+/// caller holds the vector for the length of its own run.
+///
 /// The failure is returned rather than reported here because Google Benchmark 1.9.5 has no free
 /// reporting entry point -- `SkipWithError` is a member of `State`, which this helper does not hold.
 /// Returning it also reads better: `false` means "do not measure what you were about to measure",
 /// and every caller below turns it into `state.SkipWithError`, whose message is what the reporter
 /// prints in place of a number.
 [[nodiscard]]
-bool add_inline_subscriptions(msgbus& bus, std::string_view pattern, std::size_t count) {
+bool add_inline_subscriptions(
+    msgbus& bus, std::string_view pattern, std::size_t count, std::vector<subscription>& armed
+) {
+    armed.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
-        const auto added = bus.subscribe(pattern, [](const message&) {});
+        auto added = bus.subscribe(pattern, [](const message&) {});
         if (!added) { return false; }
+        armed.push_back(*std::move(added));
     }
     return true;
 }
@@ -164,12 +184,17 @@ BENCHMARK(bm_matcher_match)->Arg(1)->Arg(64)->Arg(512)->Unit(::benchmark::kNanos
 /// its own cost, and any change to the snapshot's shape has a number here that moves.
 static void bm_router_resolve(::benchmark::State& state) {
     router routes;
+    // The handles outlive the loop for the reason the table has no fan-out in this benchmark: the
+    // routing cost is what is measured, and a table emptied before the first `resolve` would be the
+    // parse alone, timed repeatedly.
+    std::vector<subscription> armed;
     for (std::int64_t i = 0; i < state.range(0); ++i) {
-        const auto added = routes.subscribe("site/#", [](const message&) {});
+        auto added = routes.subscribe("site/#", [](const message&) {});
         if (!added) {
             state.SkipWithError("the benchmark's own subscription pattern was rejected");
             return;
         }
+        armed.push_back(*std::move(added));
     }
     const auto parsed = parse_topic(k_device_topic);
     if (!parsed) {
@@ -189,7 +214,8 @@ BENCHMARK(bm_router_resolve)->Arg(1)->Arg(64)->Arg(512)->Unit(::benchmark::kNano
 /// deliberately empty -- a handler that did work would put its cost inside a routing measurement.
 static void bm_publish_sync_fanout(::benchmark::State& state) {
     msgbus bus;
-    if (!add_inline_subscriptions(bus, "site/#", static_cast<std::size_t>(state.range(0)))) {
+    std::vector<subscription> armed;
+    if (!add_inline_subscriptions(bus, "site/#", static_cast<std::size_t>(state.range(0)), armed)) {
         state.SkipWithError("the benchmark's own subscription pattern was rejected");
         return;
     }
@@ -207,12 +233,14 @@ BENCHMARK(bm_publish_sync_fanout)->Arg(1)->Arg(8)->Arg(64)->Arg(512)->Unit(::ben
 /// them is the fan-out.
 static void bm_publish_sync_no_match(::benchmark::State& state) {
     msgbus bus;
+    std::vector<subscription> armed;
     for (std::int64_t i = 0; i < state.range(0); ++i) {
-        const auto added = bus.subscribe("other/line1/device7/sensor/telemetry", [](const message&) {});
+        auto added = bus.subscribe("other/line1/device7/sensor/telemetry", [](const message&) {});
         if (!added) {
             state.SkipWithError("the benchmark's own subscription pattern was rejected");
             return;
         }
+        armed.push_back(*std::move(added));
     }
 
     for (auto _ : state) { bus.publish_sync(k_device_topic, sample_payload(1)); }
@@ -226,9 +254,10 @@ BENCHMARK(bm_publish_sync_no_match)->Arg(1)->Arg(64)->Arg(512)->Unit(::benchmark
 /// registered at every depth so each row has the same fan-out and only the walk length varies.
 static void bm_publish_sync_depth(::benchmark::State& state) {
     msgbus bus;
+    std::vector<subscription> armed;
     const std::int64_t depth = state.range(0);
     for (std::int64_t level = 1; level <= depth; ++level) {
-        if (!add_inline_subscriptions(bus, pattern_for_depth(static_cast<std::size_t>(level)), 1)) {
+        if (!add_inline_subscriptions(bus, pattern_for_depth(static_cast<std::size_t>(level)), 1, armed)) {
             state.SkipWithError("the benchmark's own subscription pattern was rejected");
             return;
         }
@@ -249,7 +278,8 @@ BENCHMARK(bm_publish_sync_depth)->Arg(1)->Arg(3)->Arg(5)->Unit(::benchmark::kMic
 /// route" number -- what a gateway's asynchronous throughput actually is.
 static void bm_publish_async_round_trip(::benchmark::State& state) {
     msgbus bus;
-    if (!add_inline_subscriptions(bus, "site/#", static_cast<std::size_t>(state.range(0)))) {
+    std::vector<subscription> armed;
+    if (!add_inline_subscriptions(bus, "site/#", static_cast<std::size_t>(state.range(0)), armed)) {
         state.SkipWithError("the benchmark's own subscription pattern was rejected");
         return;
     }
@@ -277,7 +307,8 @@ static void bm_publish_async_drop_oldest(::benchmark::State& state) {
     settings.queue_capacity_ = 1;
     settings.policy_ = back_pressure::DROP_OLDEST;
     msgbus bus { std::move(settings) };
-    if (!add_inline_subscriptions(bus, "site/#", 1)) {
+    std::vector<subscription> armed;
+    if (!add_inline_subscriptions(bus, "site/#", 1, armed)) {
         state.SkipWithError("the benchmark's own subscription pattern was rejected");
         return;
     }
@@ -297,18 +328,21 @@ BENCHMARK(bm_publish_async_drop_oldest)->Unit(::benchmark::kMicrosecond);
 /// number that says whether a reconnect re-subscribing a few hundred topics is a problem.
 static void bm_subscribe_unsubscribe(::benchmark::State& state) {
     msgbus bus;
-    if (!add_inline_subscriptions(bus, "site/#", static_cast<std::size_t>(state.range(0)))) {
+    std::vector<subscription> armed;
+    if (!add_inline_subscriptions(bus, "site/#", static_cast<std::size_t>(state.range(0)), armed)) {
         state.SkipWithError("the benchmark's own subscription pattern was rejected");
         return;
     }
 
     for (auto _ : state) {
-        const auto added = bus.subscribe("site/line1/#", [](const message&) {});
+        auto added = bus.subscribe("site/line1/#", [](const message&) {});
         if (!added) {
             state.SkipWithError("the benchmark's own subscription pattern was rejected");
             return;
         }
-        static_cast<void>(bus.unsubscribe(*added));
+        // Cancelled through the handle rather than through a second bus call: `bm_subscribe_unsubscribe`
+        // measures a registration's whole life, and the handle is what a caller would hold.
+        static_cast<void>(added->cancel());
     }
 }
 
@@ -326,13 +360,16 @@ static void bm_wide_table(::benchmark::State& state) {
 
     std::vector<std::string> topics;
     topics.reserve(count);
+    std::vector<subscription> armed;
+    armed.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
         topics.push_back("site/line" + std::to_string(i) + "/sensor/temp");
-        const auto added = bus.subscribe(topics.back(), [](const message&) {});
+        auto added = bus.subscribe(topics.back(), [](const message&) {});
         if (!added) {
             state.SkipWithError("the benchmark's own subscription pattern was rejected");
             return;
         }
+        armed.push_back(*std::move(added));
     }
 
     std::size_t next = 0;

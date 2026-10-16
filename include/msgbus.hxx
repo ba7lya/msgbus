@@ -5,7 +5,7 @@
 /// publications into deliveries.
 /// @version 0.1
 /// @date 2026-10-16
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 
@@ -143,16 +143,21 @@ public:
     /// @brief Registers `handler` for every topic matching `pattern`.
     /// @details No lock beyond the router's: the subscription table is the router's alone, so a
     /// subscribe racing a publish is coherent for the same reason a subscribe racing a resolve is.
+    /// @note The handle is bound to the router, not to this bus, because the router is what issued the
+    /// id and what a cancellation has to reach. The bus is neither copyable nor movable, and the
+    /// router it owns is a member, so both outlive any handle a caller keeps.
     [[nodiscard]]
-    result<subscription_id, error> subscribe(
+    result<subscription, error> subscribe(
         std::string_view pattern, handler handler, dispatch_options options = {}, error_handler on_error = {}
     ) override {
         return routes_.subscribe(pattern, std::move(handler), options, std::move(on_error));
     }
 
-    /// @brief Cancels a subscription.
+    /// @brief Cancels a subscription by id.
     /// @details A message already queued for the routing worker is resolved **when the worker reaches
     /// it**, not when it was published, so a subscription cancelled first does not see it.
+    /// @note The by-id form, kept because the router issues ids and a caller may hold one. A handle
+    /// has `subscription::cancel`, which is the form a subscriber normally wants.
     bool unsubscribe(subscription_id id) override { return routes_.unsubscribe(id); }
 
     /// @brief Parses `msg`'s topic and routes it on the calling thread.

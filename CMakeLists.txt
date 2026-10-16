@@ -12,6 +12,14 @@ option(${PROJECT_NAME}_BUILD_EXAMPLE   "Build examples"      OFF)
 option(${PROJECT_NAME}_BUILD_DOC       "Build Documentation" OFF)
 option(${PROJECT_NAME}_BUILD_TEST      "Build Test"          OFF)
 
+# --- log switch ---
+# `include/logger.hxx` reads this one macro, and ON is the default: a trace that is absent because
+# nobody asked for it is a failure nobody notices, while a trace that is present and switched off at
+# run time costs one comparison. Turning it off is what a build does when the program's own logging
+# already covers the bus; it removes every spdlog call from `ba7lya.msgbus`'s headers without
+# touching a call site.
+option(${PROJECT_NAME}_BUILD_LOG "Compile the bus trace in" ON)
+
 # --- sanitizer ---
 # One of: "" (off) | address | thread | undefined. A build-time check rather than a shipping
 # feature, so it is a cache variable instead of an install-time option: the flag must never
@@ -77,6 +85,15 @@ target_compile_options(${PROJECT_NAME} INTERFACE "$<$<CXX_COMPILER_ID:MSVC>:/utf
 # `_Throw_Cpp_error` rethrow inside the unwind path, which is what turned the unit-test suite
 # red on `win-msvc-2026-dbg` while every other configuration stayed green.
 target_compile_options(${PROJECT_NAME} INTERFACE "$<$<CXX_COMPILER_ID:MSVC>:/EHsc>")
+
+# The log switch travels as a compile definition on the INTERFACE, unlike the sanitizer flags below:
+# `logger.hxx` is a public header, so which build of it a translation unit sees is part of the
+# library's interface, and every consumer has to agree with the one the library was configured for.
+# It is passed as `0`/`1` rather than only-when-on, so the header's own fallback never decides: a
+# consumer that defines the macro for itself overrides the build, and one that does not gets the
+# switch answered the same way `option()` was.
+target_compile_definitions(${PROJECT_NAME} INTERFACE
+    "BA7LYA_MSGBUS_LOG_ENABLED=$<BOOL:${${PROJECT_NAME}_BUILD_LOG}>")
 
 # --- sanitizer flags ---
 # A dedicated INTERFACE target, never linked by ${PROJECT_NAME} itself: this library is

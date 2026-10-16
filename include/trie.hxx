@@ -5,7 +5,7 @@
 /// insert into it, prune it and walk it.
 /// @version 0.1
 /// @date 2026-10-14
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 

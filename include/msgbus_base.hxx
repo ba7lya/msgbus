@@ -4,7 +4,7 @@
 /// @brief The bus interface: subscribing to topic patterns and publishing to concrete topics.
 /// @version 0.1
 /// @date 2026-10-15
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 
@@ -17,6 +17,7 @@
 
 #include "common.hxx"
 #include "error.hxx"
+#include "subscription.hxx"
 
 namespace ba7lya::msgbus {
 
@@ -41,16 +42,21 @@ public:
     /// @param on_error where the handler's exception goes; empty hands it back to the caller of a
     /// `publish_sync` — a publish that has returned has no caller left, and the bus's own error
     /// channel takes it instead
-    /// @return the new subscription's id, or why the pattern was rejected; nothing is registered on failure
+    /// @return the new subscription, or why the pattern was rejected; nothing is registered on failure
+    /// @note The returned handle owns the registration: dropping it cancels the subscription. A caller
+    /// that wants the subscription to outlive the statement that armed it must keep the handle.
     [[nodiscard]]
-    virtual result<subscription_id, error> subscribe(
+    virtual result<subscription, error> subscribe(
         std::string_view pattern, handler handler, dispatch_options options = {}, error_handler on_error = {}
     ) = 0;
 
-    /// @brief Cancels a subscription.
+    /// @brief Cancels a subscription by id.
     /// @return true if `id` was live; false if it was unknown, already cancelled, or never issued.
     /// @details Idempotent: a second call on the same id returns false and changes nothing. A message
     /// already queued for a cancelled subscription is not delivered to it.
+    /// @note Prefer `subscription::cancel`, which cannot be handed an id that was never live. This is
+    /// the by-id form, and the one an adapter that only holds ids — a config table, a wire protocol —
+    /// has to reach for.
     virtual bool unsubscribe(subscription_id id) = 0;
 
     /// @brief Routes `msg` on the calling thread.

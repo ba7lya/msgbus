@@ -5,7 +5,7 @@
 /// and the snapshot a publisher delivers from.
 /// @version 0.1
 /// @date 2026-10-15
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 
@@ -30,6 +30,7 @@
 #include "error.hxx"
 #include "layer_matcher.hxx"
 #include "router.hxx"
+#include "subscription.hxx"
 
 namespace ba7lya::msgbus {
 
@@ -92,17 +93,60 @@ private:
 /// `bugprone-unused-return-value`; a named sink states the intent and settles the check.
 void sink(const auto&... unused) { static_cast<void>(sizeof...(unused)); }
 
-/// @brief Registers `callback`, failing the test if the pattern is rejected.
-/// @return the subscription id, or 0 after a failure
-/// @note Not `[[nodiscard]]`, unlike `router::subscribe` itself: the check that matters — the pattern
-/// was accepted — has already happened here, so a case that does not need the id may drop it.
-subscription_id subscribe(
-    router& bus, std::string_view pattern, handler callback, dispatch_options options = {}, error_handler on_error = {}
-) {
-    const auto registered = bus.subscribe(pattern, std::move(callback), options, std::move(on_error));
-    EXPECT_TRUE(registered.has_value()) << "on " << pattern;
-    return registered.value_or(0);
-}
+///
+/// @brief What a case arms: every handle it registered on a router, held until the holder dies.
+/// @details `router::subscribe` returns an owning handle, and a handle destroyed at the end of its
+/// statement cancels the subscription right there. A case that armed a subscription and then published
+/// — leaving the result as a bare statement — would therefore be arming nothing, and the whole file
+/// would go on passing while testing an empty table. Parking the handles here for the length of the
+/// case is what makes `armed.add(...)` as a statement mean "registered, and it stays registered".
+///
+/// The declaration order matters: a holder is declared after the router it registers on and destroyed
+/// before it, so every handle reaches its router while the router is still alive.
+///
+class registrations {
+public:
+    registrations() = default;
+
+    registrations(const registrations&) = delete;
+    registrations& operator=(const registrations&) = delete;
+    registrations(registrations&&) = delete;
+    registrations& operator=(registrations&&) = delete;
+
+    /// @brief Cancels every subscription still held, in reverse order of registration.
+    ~registrations() = default;
+
+    /// @brief Registers `callback` for `pattern`, keeping the handle alive here.
+    /// @return the id the router issued, or 0 if the pattern was rejected
+    /// @note Not `[[nodiscard]]`: most cases arm a subscription for its effect and never look at the
+    /// id. The failure it could report is the rejected pattern, and that has already been asserted on
+    /// — a case that means to assert on the rejection calls `router::subscribe` itself instead.
+    /// @note The router issues the id and the matcher stores it, so the value returned here is the
+    /// same one `resolve` reports for this registration and the one `unsubscribe` takes.
+    subscription_id add(
+        router& bus, std::string_view pattern, handler callback, dispatch_options options = {},
+        error_handler on_error = {}
+    ) {
+        auto registered = bus.subscribe(pattern, std::move(callback), options, std::move(on_error));
+        EXPECT_TRUE(registered.has_value()) << "on " << pattern;
+        if (!registered.has_value()) { return 0; }
+
+        subscription handle = *std::move(registered);
+        const subscription_id id = handle.id();
+        handles_.push_back(std::move(handle));
+        return id;
+    }
+
+    /// @brief How many handles are still held, which is how many are still live.
+    [[nodiscard]]
+    std::size_t count() const noexcept {
+        return handles_.size();
+    }
+
+private:
+    /// @brief The handles, one per registration, in the order they were armed.
+    std::vector<subscription> handles_;
+};
 
 /// @brief Resolves `topic` against `bus` and returns the matching ids, sorted so the expectation
 /// reads as a set — the delivery order is unspecified and must not be asserted on.
@@ -150,7 +194,8 @@ message make_message(std::string_view topic, std::string_view payload) {
 TEST(router_test, a_subscription_receives_its_message) {
     router bus;
     recorder received;
-    subscribe(bus, "device/room1/temp", received.callback());
+    registrations armed;
+    armed.add(bus, "device/room1/temp", received.callback());
 
     EXPECT_EQ(publish(bus, "device/room1/temp"), nullptr);
     EXPECT_TRUE(received.received_only("device/room1/temp"));
@@ -158,9 +203,10 @@ TEST(router_test, a_subscription_receives_its_message) {
 
 TEST(router_test, subscribe_returns_a_nonzero_id) {
     router bus;
+    registrations armed;
 
-    const auto first = subscribe(bus, "device/room1/temp", [](const message&) {});
-    const auto second = subscribe(bus, "device/room2/temp", [](const message&) {});
+    const auto first = armed.add(bus, "device/room1/temp", [](const message&) {});
+    const auto second = armed.add(bus, "device/room2/temp", [](const message&) {});
 
     EXPECT_NE(first, 0u);
     EXPECT_NE(second, 0u);
@@ -183,12 +229,13 @@ TEST(router_test, a_rejected_pattern_registers_nothing) {
 
 TEST(router_test, a_rejected_pattern_does_not_consume_an_id) {
     router bus;
-    const auto first = subscribe(bus, "device/room1/temp", [](const message&) {});
+    registrations armed;
+    const auto first = armed.add(bus, "device/room1/temp", [](const message&) {});
 
     const auto rejected = bus.subscribe("device/#/temp", [](const message&) {});
     ASSERT_FALSE(rejected.has_value());
 
-    const auto second = subscribe(bus, "device/room1/temp", [](const message&) {});
+    const auto second = armed.add(bus, "device/room1/temp", [](const message&) {});
     EXPECT_EQ(second, first + 1);
 }
 
@@ -202,8 +249,9 @@ TEST(router_test, subscribing_an_empty_handler_throws) {
 
 TEST(router_test, a_pattern_may_be_held_by_two_ids) {
     router bus;
-    const auto first = subscribe(bus, "device/room1/temp", [](const message&) {});
-    const auto second = subscribe(bus, "device/room1/temp", [](const message&) {});
+    registrations armed;
+    const auto first = armed.add(bus, "device/room1/temp", [](const message&) {});
+    const auto second = armed.add(bus, "device/room1/temp", [](const message&) {});
 
     expect_resolved(bus, "device/room1/temp", { first, second });
 }
@@ -212,10 +260,11 @@ TEST(router_test, a_pattern_may_be_held_by_two_ids) {
 
 TEST(router_test, a_literal_pattern_receives_only_its_own_topic) {
     router bus;
+    registrations armed;
     recorder own;
     recorder other;
-    subscribe(bus, "device/room1/temp", own.callback());
-    subscribe(bus, "device/room1/humidity", other.callback());
+    armed.add(bus, "device/room1/temp", own.callback());
+    armed.add(bus, "device/room1/humidity", other.callback());
 
     EXPECT_EQ(publish(bus, "device/room1/temp"), nullptr);
     EXPECT_TRUE(own.received_only("device/room1/temp"));
@@ -224,8 +273,9 @@ TEST(router_test, a_literal_pattern_receives_only_its_own_topic) {
 
 TEST(router_test, a_single_level_wildcard_receives_exactly_one_level) {
     router bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "device/+/temp", received.callback());
+    armed.add(bus, "device/+/temp", received.callback());
 
     EXPECT_EQ(publish(bus, "device/room1/temp"), nullptr);
     EXPECT_TRUE(received.received_only("device/room1/temp"));
@@ -237,8 +287,9 @@ TEST(router_test, a_single_level_wildcard_receives_exactly_one_level) {
 
 TEST(router_test, a_multi_level_wildcard_receives_the_subtree_and_its_own_node) {
     router bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "device/#", received.callback());
+    armed.add(bus, "device/#", received.callback());
 
     EXPECT_EQ(publish(bus, "device"), nullptr);
     EXPECT_EQ(publish(bus, "device/room1"), nullptr);
@@ -249,10 +300,11 @@ TEST(router_test, a_multi_level_wildcard_receives_the_subtree_and_its_own_node) 
 
 TEST(router_test, overlapping_patterns_deliver_to_each_subscription_once) {
     router bus;
+    registrations armed;
     recorder broad;
     recorder narrow;
-    const auto broad_id = subscribe(bus, "device/#", broad.callback());
-    const auto narrow_id = subscribe(bus, "device/room1/temp", narrow.callback());
+    const auto broad_id = armed.add(bus, "device/#", broad.callback());
+    const auto narrow_id = armed.add(bus, "device/room1/temp", narrow.callback());
 
     // Deduplication is per id: the matcher collects ids into a set, so an id reached through several
     // of its own patterns is still reached once. Two distinct ids that both match stay two deliveries.
@@ -264,8 +316,9 @@ TEST(router_test, overlapping_patterns_deliver_to_each_subscription_once) {
 
 TEST(router_test, a_topic_matching_nothing_delivers_nothing) {
     router bus;
+    registrations armed;
     recorder received;
-    subscribe(bus, "device/room1/temp", received.callback());
+    armed.add(bus, "device/room1/temp", received.callback());
 
     EXPECT_EQ(resolved_ids(bus, "device/room2/temp"), (std::vector<subscription_id> {}));
     EXPECT_EQ(publish(bus, "device/room2/temp"), nullptr);
@@ -274,12 +327,13 @@ TEST(router_test, a_topic_matching_nothing_delivers_nothing) {
 
 TEST(router_test, every_matching_subscription_is_delivered_exactly_once) {
     router bus;
+    registrations armed;
     recorder first;
     recorder second;
     recorder third;
-    subscribe(bus, "device/room1/temp", first.callback());
-    subscribe(bus, "device/+/temp", second.callback());
-    subscribe(bus, "device/#", third.callback());
+    armed.add(bus, "device/room1/temp", first.callback());
+    armed.add(bus, "device/+/temp", second.callback());
+    armed.add(bus, "device/#", third.callback());
 
     EXPECT_EQ(publish(bus, "device/room1/temp"), nullptr);
     EXPECT_EQ(first.count(), 1u);
@@ -291,8 +345,9 @@ TEST(router_test, every_matching_subscription_is_delivered_exactly_once) {
 
 TEST(router_test, a_removed_subscription_no_longer_receives) {
     router bus;
+    registrations armed;
     recorder received;
-    const auto id = subscribe(bus, "device/room1/temp", received.callback());
+    const auto id = armed.add(bus, "device/room1/temp", received.callback());
 
     ASSERT_TRUE(bus.unsubscribe(id));
 
@@ -303,7 +358,8 @@ TEST(router_test, a_removed_subscription_no_longer_receives) {
 
 TEST(router_test, unsubscribe_reports_whether_the_id_was_live) {
     router bus;
-    const auto id = subscribe(bus, "device/room1/temp", [](const message&) {});
+    registrations armed;
+    const auto id = armed.add(bus, "device/room1/temp", [](const message&) {});
 
     EXPECT_TRUE(bus.unsubscribe(id));
     EXPECT_FALSE(bus.unsubscribe(id));
@@ -311,17 +367,18 @@ TEST(router_test, unsubscribe_reports_whether_the_id_was_live) {
 
 TEST(router_test, unsubscribe_is_idempotent) {
     router bus;
-    const auto id = subscribe(bus, "device/+/temp", [](const message&) {});
+    registrations armed;
+    const auto id = armed.add(bus, "device/+/temp", [](const message&) {});
 
     EXPECT_TRUE(bus.unsubscribe(id));
-    EXPECT_FALSE(bus.unsubscribe(id));
     EXPECT_FALSE(bus.unsubscribe(id));
     EXPECT_EQ(bus.subscription_count(), 0u);
 }
 
 TEST(router_test, unsubscribing_an_unknown_id_returns_false) {
     router bus;
-    subscribe(bus, "device/room1/temp", [](const message&) {});
+    registrations armed;
+    armed.add(bus, "device/room1/temp", [](const message&) {});
 
     EXPECT_FALSE(bus.unsubscribe(9999));
     EXPECT_EQ(bus.subscription_count(), 1u);
@@ -329,10 +386,11 @@ TEST(router_test, unsubscribing_an_unknown_id_returns_false) {
 
 TEST(router_test, an_id_is_never_reused_after_unsubscribe) {
     router bus;
-    const auto first = subscribe(bus, "device/room1/temp", [](const message&) {});
+    registrations armed;
+    const auto first = armed.add(bus, "device/room1/temp", [](const message&) {});
     ASSERT_TRUE(bus.unsubscribe(first));
 
-    const auto second = subscribe(bus, "device/room1/temp", [](const message&) {});
+    const auto second = armed.add(bus, "device/room1/temp", [](const message&) {});
 
     EXPECT_NE(second, first);
     EXPECT_FALSE(bus.unsubscribe(first)) << "a stale id must not cancel a newer subscription";
@@ -341,10 +399,11 @@ TEST(router_test, an_id_is_never_reused_after_unsubscribe) {
 
 TEST(router_test, unsubscribe_removes_the_pattern_it_held) {
     router bus;
+    registrations armed;
     recorder first;
     recorder second;
-    const auto id = subscribe(bus, "device/#", first.callback());
-    const auto kept = subscribe(bus, "sensor/+/temp", second.callback());
+    const auto id = armed.add(bus, "device/#", first.callback());
+    const auto kept = armed.add(bus, "sensor/+/temp", second.callback());
 
     ASSERT_TRUE(bus.unsubscribe(id));
 
@@ -360,9 +419,10 @@ TEST(router_test, unsubscribe_removes_the_pattern_it_held) {
 
 TEST(router_test, a_throwing_handler_does_not_skip_its_siblings) {
     router bus;
+    registrations armed;
     recorder sibling;
-    subscribe(bus, "device/room1/temp", [](const message&) { throw std::runtime_error("from the handler"); });
-    subscribe(bus, "device/+/temp", sibling.callback());
+    armed.add(bus, "device/room1/temp", [](const message&) { throw std::runtime_error("from the handler"); });
+    armed.add(bus, "device/+/temp", sibling.callback());
 
     EXPECT_NE(publish(bus, "device/room1/temp"), nullptr);
     EXPECT_EQ(sibling.count(), 1u);
@@ -370,6 +430,7 @@ TEST(router_test, a_throwing_handler_does_not_skip_its_siblings) {
 
 TEST(router_test, a_throwing_handler_goes_to_its_own_error_handler) {
     router bus;
+    registrations armed;
     recorder reported;
     const error_handler on_error = [&reported](const message& msg, const std::exception_ptr& failure) {
         try {
@@ -379,7 +440,7 @@ TEST(router_test, a_throwing_handler_goes_to_its_own_error_handler) {
             reported.callback()(message { msg.topic_ + "/" + error.what(), {}, {} });
         }
     };
-    subscribe(bus, "device/room1/temp", [](const message&) { throw std::runtime_error("boom"); }, {}, on_error);
+    armed.add(bus, "device/room1/temp", [](const message&) { throw std::runtime_error("boom"); }, {}, on_error);
 
     EXPECT_EQ(publish(bus, "device/room1/temp"), nullptr) << "a handled failure does not reach the caller";
     EXPECT_TRUE(reported.received_only("device/room1/temp/boom"));
@@ -387,9 +448,10 @@ TEST(router_test, a_throwing_handler_goes_to_its_own_error_handler) {
 
 TEST(router_test, a_throwing_handler_with_no_error_handler_is_returned_to_the_caller) {
     router bus;
+    registrations armed;
     recorder sibling;
-    subscribe(bus, "device/room1/temp", [](const message&) { throw std::runtime_error("boom"); });
-    subscribe(bus, "sensor/room1/temp", sibling.callback());
+    armed.add(bus, "device/room1/temp", [](const message&) { throw std::runtime_error("boom"); });
+    armed.add(bus, "sensor/room1/temp", sibling.callback());
 
     const std::exception_ptr failure = publish(bus, "device/room1/temp");
 
@@ -406,11 +468,12 @@ TEST(router_test, a_throwing_handler_with_no_error_handler_is_returned_to_the_ca
 
 TEST(router_test, an_error_handler_that_throws_does_not_stop_delivery) {
     router bus;
+    registrations armed;
     recorder sibling;
     const error_handler on_error
         = [](const message&, const std::exception_ptr&) { throw std::runtime_error("handler too"); };
-    subscribe(bus, "device/#", [](const message&) { throw std::runtime_error("boom"); }, {}, on_error);
-    subscribe(bus, "device/room1/temp", sibling.callback());
+    armed.add(bus, "device/#", [](const message&) { throw std::runtime_error("boom"); }, {}, on_error);
+    armed.add(bus, "device/room1/temp", sibling.callback());
 
     const std::exception_ptr failure = publish(bus, "device/room1/temp");
 
@@ -420,8 +483,9 @@ TEST(router_test, an_error_handler_that_throws_does_not_stop_delivery) {
 
 TEST(router_test, only_the_first_unhandled_exception_is_returned) {
     router bus;
-    subscribe(bus, "device/#", [](const message&) { throw std::runtime_error("first"); });
-    subscribe(bus, "device/room1/temp", [](const message&) { throw std::runtime_error("second"); });
+    registrations armed;
+    armed.add(bus, "device/#", [](const message&) { throw std::runtime_error("first"); });
+    armed.add(bus, "device/room1/temp", [](const message&) { throw std::runtime_error("second"); });
 
     const auto parsed = parse_topic("device/room1/temp");
     ASSERT_TRUE(parsed.has_value());
@@ -443,8 +507,9 @@ TEST(router_test, only_the_first_unhandled_exception_is_returned) {
 
 TEST(router_test, each_subscription_is_handed_the_message_it_was_sent) {
     router bus;
+    registrations armed;
     std::string seen;
-    subscribe(bus, "device/room1/temp", [&seen](const message& msg) {
+    armed.add(bus, "device/room1/temp", [&seen](const message& msg) {
         seen = std::any_cast<std::string>(msg.payload_);
     });
 
@@ -460,18 +525,20 @@ TEST(router_test, each_subscription_is_handed_the_message_it_was_sent) {
 
 TEST(router_test, resolve_reflects_a_subscription_registered_before_it) {
     router bus;
+    registrations armed;
     recorder received;
-    const auto id = subscribe(bus, "device/#", received.callback());
+    const auto id = armed.add(bus, "device/#", received.callback());
 
     expect_resolved(bus, "device/room1/temp", { id });
 }
 
 TEST(router_test, a_subscription_cancelled_before_resolve_is_not_delivered) {
     router bus;
+    registrations armed;
     recorder received;
-    const auto id = subscribe(bus, "device/#", received.callback());
+    const auto id = armed.add(bus, "device/#", received.callback());
     recorder sibling;
-    subscribe(bus, "device/room1/temp", sibling.callback());
+    armed.add(bus, "device/room1/temp", sibling.callback());
 
     ASSERT_TRUE(bus.unsubscribe(id));
 
@@ -482,8 +549,9 @@ TEST(router_test, a_subscription_cancelled_before_resolve_is_not_delivered) {
 
 TEST(router_test, a_subscription_cancelled_after_the_snapshot_still_runs) {
     router bus;
+    registrations armed;
     recorder received;
-    const auto id = subscribe(bus, "device/room1/temp", received.callback());
+    const auto id = armed.add(bus, "device/room1/temp", received.callback());
 
     const auto parsed = parse_topic("device/room1/temp");
     ASSERT_TRUE(parsed.has_value());
@@ -500,6 +568,7 @@ TEST(router_test, a_subscription_cancelled_after_the_snapshot_still_runs) {
 
 TEST(router_test, a_snapshot_does_not_see_a_subscription_added_after_it) {
     router bus;
+    registrations armed;
     recorder late;
     const auto parsed = parse_topic("device/room1/temp");
     ASSERT_TRUE(parsed.has_value());
@@ -507,7 +576,7 @@ TEST(router_test, a_snapshot_does_not_see_a_subscription_added_after_it) {
     const std::vector<delivery> routes = bus.resolve(parsed.value().levels());
     ASSERT_TRUE(routes.empty());
 
-    subscribe(bus, "device/room1/temp", late.callback());
+    armed.add(bus, "device/room1/temp", late.callback());
 
     static_cast<void>(router::deliver_all(routes, make_message("device/room1/temp", "")));
     EXPECT_EQ(late.count(), 0u);
@@ -515,8 +584,9 @@ TEST(router_test, a_snapshot_does_not_see_a_subscription_added_after_it) {
 
 TEST(router_test, dispatch_options_travel_with_the_delivery) {
     router bus;
+    registrations armed;
     constexpr std::uint64_t PORT_EXECUTOR = 7;
-    subscribe(bus, "device/#", [](const message&) {}, dispatch_options { PORT_EXECUTOR, back_pressure::DROP_NEW });
+    armed.add(bus, "device/#", [](const message&) {}, dispatch_options { PORT_EXECUTOR, back_pressure::DROP_NEW });
 
     const auto parsed = parse_topic("device/room1/temp");
     ASSERT_TRUE(parsed.has_value());
@@ -529,7 +599,8 @@ TEST(router_test, dispatch_options_travel_with_the_delivery) {
 
 TEST(router_test, resolve_on_a_bad_topic_is_the_callers_problem) {
     router bus;
-    subscribe(bus, "device/#", [](const message&) {});
+    registrations armed;
+    armed.add(bus, "device/#", [](const message&) {});
 
     // The router never parses, so a caller that skipped `parse_topic` gets whatever the matcher
     // makes of its levels. This is the parse failing, before the router is reached at all.
@@ -543,9 +614,10 @@ TEST(router_test, resolve_on_a_bad_topic_is_the_callers_problem) {
 
 TEST(router_test, a_handler_may_subscribe_from_within_a_delivery) {
     router bus;
+    registrations armed;
     recorder added_later;
-    subscribe(bus, "device/room1/temp", [&bus, &added_later](const message&) {
-        sink(bus.subscribe("sensor/#", added_later.callback()));
+    armed.add(bus, "device/room1/temp", [&bus, &armed, &added_later](const message&) {
+        armed.add(bus, "sensor/#", added_later.callback());
     });
 
     EXPECT_EQ(publish(bus, "device/room1/temp"), nullptr) << "the lock is released before the handler runs";
@@ -554,9 +626,10 @@ TEST(router_test, a_handler_may_subscribe_from_within_a_delivery) {
 
 TEST(router_test, a_handler_may_unsubscribe_from_within_a_delivery) {
     router bus;
+    registrations armed;
     recorder later;
-    const auto later_id = subscribe(bus, "sensor/#", later.callback());
-    subscribe(bus, "device/room1/temp", [&bus, later_id](const message&) { sink(bus.unsubscribe(later_id)); });
+    const auto later_id = armed.add(bus, "sensor/#", later.callback());
+    armed.add(bus, "device/room1/temp", [&bus, later_id](const message&) { sink(bus.unsubscribe(later_id)); });
 
     EXPECT_EQ(publish(bus, "device/room1/temp"), nullptr);
     EXPECT_EQ(bus.subscription_count(), 1u);
@@ -567,14 +640,15 @@ TEST(router_test, a_handler_may_unsubscribe_from_within_a_delivery) {
 
 TEST(router_test, concurrent_subscribe_and_unsubscribe_keep_the_id_sets_coherent) {
     router bus;
+    registrations armed;
     std::atomic<bool> stop { false };
     std::atomic<int> issued { 0 };
     std::atomic<bool> cancelled_the_first { false };
 
     constexpr int ROUNDS = 200;
-    std::thread adder([&bus, &stop, &issued] {
+    std::thread adder([&bus, &armed, &stop, &issued] {
         for (int i = 0; i < ROUNDS; ++i) {
-            if (bus.subscribe("device/#", [](const message&) {})) { ++issued; }
+            if (armed.add(bus, "device/#", [](const message&) {}) != 0) { ++issued; }
         }
         stop = true;
     });
@@ -610,11 +684,12 @@ TEST(router_test, concurrent_subscribe_and_unsubscribe_keep_the_id_sets_coherent
 
 TEST(router_test, concurrent_publish_and_subscribe_never_observe_a_half_registered_subscription) {
     router bus;
+    registrations armed;
     recorder received;
     std::atomic<bool> stop { false };
     std::atomic<std::size_t> delivered { 0 };
 
-    subscribe(bus, "device/#", received.callback());
+    armed.add(bus, "device/#", received.callback());
 
     std::thread publisher([&bus, &stop, &delivered] {
         while (!stop) {
@@ -623,10 +698,10 @@ TEST(router_test, concurrent_publish_and_subscribe_never_observe_a_half_register
         }
     });
 
-    std::thread subscriber([&bus, &stop] {
+    std::thread subscriber([&bus, &armed, &stop] {
         constexpr int ROUNDS = 300;
         for (int i = 0; i < ROUNDS; ++i) {
-            sink(bus.subscribe("device/+/temp", [](const message&) {}));
+            sink(armed.add(bus, "device/+/temp", [](const message&) {}));
         }
         stop = true;
     });
@@ -640,13 +715,14 @@ TEST(router_test, concurrent_publish_and_subscribe_never_observe_a_half_register
 
 TEST(router_test, concurrent_unsubscribe_while_publishing_does_not_race_the_handler_copy) {
     router bus;
+    registrations armed;
     recorder received;
     std::atomic<bool> stop { false };
     std::atomic<int> failures { 0 };
 
     // Id 1 is never reissued, so the cancel either finds a live id and removes it, or misses and
     // changes nothing. Either thread may win that race, and the delivery must be sound either way.
-    const auto id = subscribe(bus, "device/#", received.callback());
+    const auto id = armed.add(bus, "device/#", received.callback());
     ASSERT_EQ(id, 1u);
 
     std::thread canceller([&bus, &stop] {

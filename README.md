@@ -2,6 +2,10 @@
 
 <!-- SPDX-License-Identifier: MIT -->
 
+[![ci](https://github.com/ba7lya/msgbus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ba7lya/msgbus/actions/workflows/ci.yml)
+[![nightly](https://github.com/ba7lya/msgbus/actions/workflows/nightly.yml/badge.svg?branch=main)](https://github.com/ba7lya/msgbus/actions/workflows/nightly.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An in-process, hierarchical-topic message bus for an IoT gateway.
 
 A gateway collects readings from many devices, normalises them, and hands them to whatever consumes
@@ -33,12 +37,18 @@ using namespace ba7lya::msgbus;
 
 msgbus bus;   // the routing worker starts with the bus
 
-const auto id = bus.subscribe("site/+/device7/sensor/+", [](const message& msg) {
+subscription id = bus.subscribe("site/+/device7/sensor/+", [](const message& msg) {
     // runs on the thread the subscription named
 });
+if (!id) { /* the pattern was rejected: see id.error().code_ */ }
 
 bus.publish_sync("site/line1/device7/sensor/temperature", std::any{std::uint64_t{23175}});
 ```
+
+`subscribe` returns a `subscription`: a move-only handle that owns the registration and cancels it
+when destroyed. A subscription's lifetime is therefore the handle's — leave it as a bare statement and
+it unsubscribes at the end of that line. Keep the handle for as long as the subscriber should keep
+hearing, and call `cancel()` (or let it fall out of scope) to stop.
 
 Two publish entry points, one routing path:
 
@@ -46,11 +56,33 @@ Two publish entry points, one routing path:
   command being acknowledged or a shutdown path is complete when the call returns. Handlers that named
   an executor are handed over rather than waited on.
 - `publish_async` hands the message to the bus's own routing worker and returns immediately.
-  `ACCEPTED` is a promise: the message is routed even if the bus is released before the worker reaches
-  it. `flush()` waits for that promise to be kept.
+  `ACCEPTED` means the message is queued, not that it has been routed: `flush()` is how a caller waits
+  until the worker is idle. A message already accepted is still routed when the bus is released.
 
 The payload is a `std::any`. Publisher and subscriber agree on a type without the bus knowing it — which
 also means a subscriber that expects the wrong type is a contract the bus cannot check.
+
+`include/logger.hxx` is the trace a gateway needs and the bus deliberately does not write itself: a
+message that was routed is not a message that was printed, and only the caller knows which of its own
+events is worth a line.
+
+```cpp
+#include "logger.hxx"
+
+bus_log(direction::publish_sync, "site/line1/device7/sensor/temperature", reading);
+// 2026-10-17 01:14:13.630 [19952] PUB(sync)  site/line1/device7/sensor/temperature  23175
+// 2026-10-17 01:14:13.630 [19952] SUB        site/line1/device7/sensor/temperature  23175  (line-reader)
+```
+
+One line per event — timestamp, thread, direction, topic, payload — over spdlog. `direction` separates
+`publish_sync` from `publish_async` because the pair answers with the thread field what neither answers
+alone: a synchronous publish and the deliveries it produces share a thread id, an asynchronous one and
+its deliveries do not.
+
+Two switches, doing different jobs. At build time, `ba7lya.msgbus_BUILD_LOG` (`ON` by default) decides
+whether the trace is compiled in at all: off, the header emits no spdlog call and not one call site
+changes. At run time, `configure_logging(log_config{ .enabled_ = false })` puts spdlog's level at `off`,
+so a deployment can silence a build that has the trace in it.
 
 ### Where handlers run
 
@@ -73,7 +105,8 @@ All three are optional and each sits behind its own CMake option:
 $ cmake --preset linux-gcc-x64 \
     -Dba7lya.msgbus_BUILD_TEST=ON \
     -Dba7lya.msgbus_BUILD_BENCHMARK=ON \
-    -Dba7lya.msgbus_BUILD_EXAMPLE=ON
+    -Dba7lya.msgbus_BUILD_EXAMPLE=ON \
+    -Dba7lya.msgbus_BUILD_LOG=ON
 $ cmake --build --preset linux-gcc-x64-dbg
 $ ctest --preset linux-gcc-x64-test -C Debug
 ```
@@ -83,6 +116,8 @@ $ ctest --preset linux-gcc-x64-test -C Debug
 | `ba7lya.msgbus.ut` | `tests/ut/` | GoogleTest suite, one file per unit (`trie`, `layer_matcher`, `router`, `executor`, `dispatcher`, `msgbus`) |
 | `msgbus_benchmark` | `benchmark/` | google benchmark: parse, matcher cycle/match, router resolve, sync fan-out, async round trip |
 | `msgbus_example_basic_matching` | `examples/basic_matching.cxx` | two overlapping patterns, three publishes, and which subscriber saw what |
+| `msgbus_example_wildcards` | `examples/wildcards.cxx` | five overlapping patterns and a reach matrix checked against a probe bus |
+| `msgbus_example_sync_and_async` | `examples/sync_and_async.cxx` | one subscription reached on two threads, and where a handler's unhandled failure ends up on each path |
 
 ## Presets
 
@@ -145,8 +180,11 @@ tests/ut/     unit tests
 benchmark/    google benchmark suite
 examples/     buildable examples
 thirdparty/   the vcpkg submodule
+LICENSE       MIT, in full
 ```
 
 ## License
 
-MIT. Every source file carries an `SPDX-License-Identifier: MIT` header.
+MIT — see [LICENSE](LICENSE) for the full text. Every source file carries an
+`SPDX-License-Identifier: MIT` header, and the manifest declares the same licence in its `license`
+field.

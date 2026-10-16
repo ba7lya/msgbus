@@ -4,7 +4,7 @@
 /// @brief The error vocabulary the core shares: one code per failure mode, plus the offending text.
 /// @version 0.1
 /// @date 2026-10-15
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 

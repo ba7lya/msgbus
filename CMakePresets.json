@@ -14,6 +14,7 @@
       "cacheVariables": {
         "ba7lya.msgbus_BUILD_BENCHMARK": true,
         "ba7lya.msgbus_BUILD_EXAMPLE": true,
+        "ba7lya.msgbus_BUILD_LOG": true,
         "ba7lya.msgbus_BUILD_TEST": true,
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": true,

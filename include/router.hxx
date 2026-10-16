@@ -5,7 +5,7 @@
 /// resolves a topic into.
 /// @version 0.1
 /// @date 2026-10-15
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 
@@ -28,6 +28,7 @@
 #include "common.hxx"
 #include "error.hxx"
 #include "layer_matcher.hxx"
+#include "subscription.hxx"
 
 namespace ba7lya::msgbus {
 
@@ -59,10 +60,12 @@ struct delivery {
 /// closure state, so `unsubscribe` destroying the table's copy cannot disturb a snapshot already in
 /// flight. What no ownership scheme here can repair is a closure capturing a reference or a raw
 /// pointer to something that dies first — that is the subscriber's contract to keep.
+/// @note A `subscription_owner`, which is what a `subscription` handle holds: cancelling one means
+/// this `unsubscribe`, so the handle needs the complete type here to be born, and nothing more.
 /// @note Not copyable or movable: the lock and the tables it guards have to travel together, and a
 /// lock is not movable anyway.
 ///
-class router {
+class router : public subscription_owner {
 public:
     router() = default;
 
@@ -78,14 +81,17 @@ public:
     /// @param callback called once per matching message; must not be empty
     /// @param options which executor should run the handler, and what to do when it falls behind
     /// @param on_error where a throw from `callback` goes; empty leaves it to `deliver`'s caller
-    /// @return the new subscription's id, or why the pattern was rejected; nothing is registered on failure
+    /// @return the new subscription, or why the pattern was rejected; nothing is registered on failure
     /// @throws std::invalid_argument if `callback` is empty. An empty handler is a programming error
     /// rather than a value the caller is expected to handle, so it is not an `error_code`.
     /// @note A rejected pattern does not consume an id: the counter advances only on success.
     /// @note The id is issued here and nowhere else, which is why `layer_matcher::add` takes it as a
     /// parameter. Ids start at 1; 0 is reserved for "never issued".
+    /// @note The returned handle owns the registration: dropping it cancels the subscription, so a
+    /// caller that wants the subscription to outlive the statement that armed it must keep the handle.
+    /// `std::move` it into whatever outlives the publisher.
     [[nodiscard]]
-    result<subscription_id, error> subscribe(
+    result<subscription, error> subscribe(
         std::string_view pattern, handler callback, dispatch_options options = {}, error_handler on_error = {}
     ) {
         if (!callback) { throw std::invalid_argument("the handler must not be empty"); }
@@ -102,7 +108,7 @@ public:
         assert(next_id_ != 0 && "the subscription id counter wrapped around");
 
         handlers_.emplace(id, registration { std::move(callback), std::move(on_error), options });
-        return id;
+        return subscription(*this, id);
     }
 
     /// @brief Cancels a subscription, dropping it from every pattern it holds.
@@ -111,7 +117,7 @@ public:
     /// on liveness: an id the matcher knows but the table does not is already cancelled.
     /// @note An id is never reissued, so a stale id can only fail to match.
     [[nodiscard]]
-    bool unsubscribe(subscription_id id) {
+    bool unsubscribe(subscription_id id) override {
         const std::unique_lock lock(mutex_);
 
         const auto live = handlers_.find(id);

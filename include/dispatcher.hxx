@@ -5,7 +5,7 @@
 /// the calling thread, and hands the rest to the executor each subscriber named.
 /// @version 0.1
 /// @date 2026-10-16
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 

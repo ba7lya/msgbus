@@ -4,7 +4,7 @@
 /// @brief The thread a subscriber asked for: a bounded FIFO of opaque closures run by one worker.
 /// @version 0.1
 /// @date 2026-10-15
-/// @copyright Copyright (c) 2026
+/// @copyright Copyright (c) 2026 BA7LYA
 ///
 // SPDX-License-Identifier: MIT
 
