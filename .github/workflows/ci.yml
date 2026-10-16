@@ -52,15 +52,11 @@ env:
     -Dba7lya.msgbus_BUILD_BENCHMARK=ON
     -Dba7lya.msgbus_BUILD_EXAMPLE=ON
 
-# Every `uses:` below names a moving tag rather than a 40-character commit SHA. Pinning to a SHA is
-# the usual supply-chain hardening, and it is a deliberate decision to skip it here: a pinned SHA
-# only stays current if something bumps it, and without Dependabot that something is a human reading
-# about a CVE in a third-party action. A tag moves under exactly the people who watch releases, so
-# an unmaintained pin is less safe than the tag it replaced, not more. Revisit if the trade-off
-# changes -- the SHAs are read from the repos rather than guessed:
-#
-#   gh api repos/actions/checkout/git/ref/tags/v7 --jq .object.sha
-#   gh api repos/lukka/run-vcpkg/git/ref/tags/v11 --jq .object.sha
+# Every `uses:` below names a commit SHA, not a moving tag -- the usual supply-chain hardening, since
+# a tag can be repointed at new code under a version people already trust. A pin only stays correct
+# while something compares it against upstream, so .github/dependabot.yml opens a PR whenever one of
+# these publishes a release, and the `# v7` comment beside each SHA is what that PR rewrites. An
+# unpinned action is not the safer choice here: it silently picks up every release, reviewed or not.
 jobs:
   win-msvc:
     name: win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
@@ -119,7 +115,7 @@ jobs:
       # preset name below is then `<base><SAN>` or `<base>-<config_name><SAN>`.
       SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: false
           # nothing in this workflow pushes, so do not leave the token behind in .git/config where
@@ -135,13 +131,13 @@ jobs:
       #
       # it also has to run before any test binary: the asan runtime is a dll that lives in the
       # toolset's bin directory, and this action is what puts that directory on PATH
-      - uses: rzlamrr/msvc-dev-cmd@v2
+      - uses: rzlamrr/msvc-dev-cmd@70b9da25ce35e6470a3bd4be4b4a1a4929a61925 # v2
         with:
           arch: x64
           vsversion: ${{ matrix.vsversion }}
           toolset: ${{ matrix.toolset }}
 
-      - uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
@@ -189,7 +185,7 @@ jobs:
       # matrix entry per push is most of this workflow's artifact storage
       - name: upload test results
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-results-win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
           path: build/${{ matrix.base }}${{ env.SAN }}/test-results.xml
@@ -242,7 +238,7 @@ jobs:
     env:
       SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: false
           persist-credentials: false
@@ -251,7 +247,7 @@ jobs:
         with:
           version: ${{ matrix.version }}
 
-      - uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
@@ -293,7 +289,7 @@ jobs:
 
       - name: upload test results
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-results-linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
           path: build/linux-gcc-x64${{ env.SAN }}/test-results.xml
@@ -337,7 +333,7 @@ jobs:
     env:
       SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: false
           persist-credentials: false
@@ -347,7 +343,7 @@ jobs:
           version: ${{ matrix.version }}
           packages: clang-${{ matrix.version }}
 
-      - uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
@@ -382,7 +378,7 @@ jobs:
 
       - name: upload test results
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-results-linux-clang-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
           path: build/linux-clang-x64${{ env.SAN }}/test-results.xml
@@ -399,7 +395,7 @@ jobs:
     env:
       LLVM_VERSION: 23
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: false
           persist-credentials: false
@@ -427,7 +423,7 @@ jobs:
     env:
       LLVM_VERSION: 23
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: false
           persist-credentials: false
@@ -437,7 +433,7 @@ jobs:
           version: ${{ env.LLVM_VERSION }}
           packages: clang-${{ env.LLVM_VERSION }} clang-tidy-${{ env.LLVM_VERSION }} clang-tools-${{ env.LLVM_VERSION }}
 
-      - uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
@@ -498,7 +494,7 @@ jobs:
 
       - name: upload the report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: clang-tidy-report
           path: clang-tidy.log

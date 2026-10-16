@@ -59,7 +59,7 @@ jobs:
     # and this runner is the slowest of the three
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: false
           persist-credentials: false
@@ -68,7 +68,7 @@ jobs:
       # on PATH rather than by the preset's toolset field, which the Ninja generators ignore, and
       # the step has to come before any test binary: the asan runtime is a dll that lives in the
       # toolset's bin directory, and this action is what puts that directory on PATH
-      - uses: rzlamrr/msvc-dev-cmd@v2
+      - uses: rzlamrr/msvc-dev-cmd@70b9da25ce35e6470a3bd4be4b4a1a4929a61925 # v2
         with:
           arch: x64
           vsversion: "2026"
@@ -77,7 +77,7 @@ jobs:
       # identical to the Linux jobs: no vcpkgGitCommitId, so the tool comes from run-vcpkg's
       # default branch and VCPKG_BINARY_SOURCES stays clear at the workflow level, which is what
       # makes every port build from source here too
-      - uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
 
       - name: configure
         shell: cmd
@@ -116,7 +116,7 @@ jobs:
 
       - name: upload test results
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-results-nightly-win-msvc
           path: build/win-msvc-2026-x64/test-results.xml
@@ -134,7 +134,7 @@ jobs:
     env:
       GCC_VERSION: 16
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: false
           persist-credentials: false
@@ -147,7 +147,7 @@ jobs:
       # regression in vcpkg itself -- or in how it drives CMake -- surfaces here rather than on the
       # day the pinned commit is bumped. The port *versions* do stay pinned either way: manifest
       # mode resolves them from vcpkg.json's builtin-baseline, not from the tool's own tree.
-      - uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
 
       - name: configure
         run: >
@@ -170,7 +170,7 @@ jobs:
 
       - name: upload test results
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-results-nightly-linux-gcc
           path: build/linux-gcc-x64/test-results.xml
@@ -189,7 +189,7 @@ jobs:
       # the plain pass has already run on the push that produced this commit
       SAN: "-tsan"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: false
           persist-credentials: false
@@ -199,7 +199,7 @@ jobs:
           version: ${{ env.LLVM_VERSION }}
           packages: clang-${{ env.LLVM_VERSION }}
 
-      - uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
 
       - name: configure
         run: >
@@ -222,7 +222,7 @@ jobs:
 
       - name: upload test results
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-results-nightly-linux-clang
           path: build/linux-clang-x64${{ env.SAN }}/test-results.xml
@@ -244,7 +244,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const day = new Date().toISOString().slice(0, 10);
