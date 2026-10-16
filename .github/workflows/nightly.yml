@@ -24,8 +24,12 @@ name: nightly
 
 on:
   schedule:
-    # midnight UTC
-    - cron: "0 0 * * *"
+    # 03:47 UTC, not midnight: every scheduled workflow on GitHub defaults to the top of the hour,
+    # and midnight UTC is the most contended slot of all because it is also when each timezone's
+    # own daily jobs land. A delayed queue does not make the canary wrong, only late, but a run that
+    # drifts far enough can start after the working day it was supposed to precede. :47 is off both
+    # the hour and the half, which is where the pressure actually is.
+    - cron: "47 3 * * *"
   workflow_dispatch:
 
 concurrency:
