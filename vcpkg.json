@@ -1,5 +1,6 @@
 {
   "builtin-baseline": "20ceb8adbf0504d4b0d5e4058a32f9d4fc896391",
+  "license": "MIT",
   "dependencies": [
     "spdlog"
   ],
