@@ -9,12 +9,13 @@
 #
 # It is a canary, not a second vote: the full OS x compiler x version x configuration x sanitizer
 # matrix already runs on every push, so repeating it here would spend the same wall-clock to fail
-# for the same reasons. Two jobs, one per Linux compiler family, each on the newest series the
-# push matrix names and each with a single pass.
+# for the same reasons. Three jobs, one per compiler family, each on the newest series the push
+# matrix names and each with a single uninstrumented Release pass.
 #
-# Windows is absent on purpose. That job pins its toolset by name (14.44 / 14.51) and rustles it
-# into place with msvc-dev-cmd, so the compiler cannot drift under us whatever the image does --
-# the only drift left on that runner is vcpkg-side, which these two jobs already exercise.
+# Windows is included for the reason the Linux jobs are: a port builds with a different toolchain
+# there, so a port that stops building under MSVC breaks nothing on Linux and vice versa. Naming a
+# toolset pins which compiler is *asked for*, not which one the image ships -- windows-2025-vs2026
+# is new enough to still be moving under us, and cl.exe comes from the runner, not from vcpkg.
 name: nightly
 
 on:
@@ -45,6 +46,75 @@ env:
     -Dba7lya.msgbus_BUILD_EXAMPLE=ON
 
 jobs:
+  win-msvc:
+    # the version is spelled out rather than read from env, here as in the Linux jobs below: a
+    # job's own `env` context is not available to its `name`, so `${{ env.VS_VERSION }}` would not
+    # interpolate at all
+    name: win-msvc-2026
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      # the same toolset ci.yml names for this image. It is chosen by putting the matching cl.exe
+      # on PATH rather than by the preset's toolset field, which the Ninja generators ignore, and
+      # the step has to come before any test binary: the asan runtime is a dll that lives in the
+      # toolset's bin directory, and this action is what puts that directory on PATH
+      - uses: rzlamrr/msvc-dev-cmd@v2
+        with:
+          arch: x64
+          vsversion: "2026"
+          toolset: "14.51"
+
+      # identical to the Linux jobs: no vcpkgGitCommitId, so the tool comes from run-vcpkg's
+      # default branch and VCPKG_BINARY_SOURCES stays clear at the workflow level, which is what
+      # makes every port build from source here too
+      - uses: lukka/run-vcpkg@v11
+
+      - name: configure
+        shell: cmd
+        run: >
+          cmake --preset win-msvc-2026-x64
+          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          %MSGBUS_CONFIGURE_FLAGS%
+
+      - name: build
+        shell: cmd
+        run: cmake --build --preset win-msvc-2026-x64-rel
+
+      # --output-junit resolves a relative path against the build tree the test preset points at,
+      # so the report lands beside the binaries rather than in the checkout root
+      #
+      # no ASAN_OPTIONS=detect_leaks=1, for the reason ci.yml gives: msvc's asan runtime does not
+      # implement leak detection, it fails every test instead of reporting the leak. This pass is
+      # uninstrumented anyway; the nightly list keeps no asan entry, since the push matrix has
+      # already run one on every commit
+      - name: test
+        shell: cmd
+        run: ctest --preset win-msvc-2026-x64-test -C Release --output-junit test-results.xml
+
+      # the runtime artifacts of a configuration share one directory, so the benchmark runs from
+      # the same place the library does and the loader finds the DLL beside the executable
+      - name: smoke the benchmarks
+        shell: cmd
+        run: >
+          build\win-msvc-2026-x64\bin\Release\msgbus_benchmark.exe
+          --benchmark_min_time=0.01s
+
+      - name: smoke the examples
+        shell: cmd
+        run: build\win-msvc-2026-x64\bin\Release\msgbus_example_basic_matching.exe
+
+      - name: upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-nightly-win-msvc
+          path: build/win-msvc-2026-x64/test-results.xml
+          if-no-files-found: warn
+
   linux-gcc:
     # the version is spelled out rather than read from env: a job's own `env` context is not
     # available to its `name`, so `${{ env.GCC_VERSION }}` here would not interpolate at all
