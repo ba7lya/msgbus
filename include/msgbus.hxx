@@ -59,18 +59,40 @@ public:
     /// @details A struct rather than an argument list so that a caller naming only the third setting
     /// does not have to restate the first two, and so adding one stays source-compatible.
     ///
+    /// The constructor is **user-provided** rather than defaulted, and the three settings are set in its
+    /// member-initialiser list rather than by default member initialisers. Neither is a style choice,
+    /// and neither is about `std::move_only_function` being `explicit`: `msgbus` is nested inside its own
+    /// class, and `explicit msgbus(config settings = {})` needs `config` to be complete — members and all
+    /// — at that point in the definition, which is *outside* every member function body. A default member
+    /// initialiser is only parsed as part of the constructor's definition, so it is not complete there,
+    /// and GCC reports the default argument as unconstructible. A user-provided constructor carries its
+    /// defaults in its own signature, which **is** complete at that point, and clang's `-fsyntax-only`
+    /// accepts both the pristine spelling (which fails with `default member initializer for
+    /// 'queue_capacity_' needed within definition of enclosing class 'msgbus'`) and this one.
+    /// @note Not an aggregate, and deliberately so: the members are named, never brace-initialised by
+    /// position, so nothing that used to work depends on the aggregate-ness this gives up.
+    ///
     struct config {
+        config() noexcept
+            : queue_capacity_(4096)
+            , policy_(back_pressure::DROP_NEW) {}
+
         /// @brief How many published messages may wait to be routed. `executor::UNBOUNDED` for no bound.
-        std::size_t queue_capacity_ = 4096;
+        std::size_t queue_capacity_;
         /// @brief What `publish_async` does when that queue is full: `DROP_NEW` answers `REJECTED`,
         /// `DROP_OLDEST` evicts the oldest queued message, `BLOCK` waits for room. `DROP_NEW` by default
         /// because it is the only one of the three that tells the publisher what happened — a dropped
         /// message under `BLOCK` shows up as a slow publisher, and one under `DROP_OLDEST` as a
         /// subscriber that has to notice a gap in the sequence numbers.
-        back_pressure policy_ = back_pressure::DROP_NEW;
+        back_pressure policy_;
         /// @brief Where a handler's failure goes when no caller is left to throw it at — that is, every
         /// failure on the routing worker, and any failure on an executor thread. Empty drops it.
-        exception_sink on_exception_ = {};
+        /// @details Left out of the initialiser list on purpose: an empty `std::move_only_function` is
+        /// already its default state, and `on_exception_ = {}` in a default member initialiser would be
+        /// copy-initialisation, which libstdc++ rejects against that type's `explicit` default
+        /// constructor. A member the initialiser list omits is default-initialised instead, which is a
+        /// direct-initialisation and does not go through it.
+        exception_sink on_exception_;
     };
 
     /// @brief Builds the bus and starts its routing worker.
