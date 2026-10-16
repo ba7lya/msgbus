@@ -24,9 +24,8 @@ name: nightly
 
 on:
   schedule:
-    # 03:17 UTC, deliberately off the hour: GitHub's cron queue is busiest at :00, and a scheduled
-    # run that sits in the queue is a run whose failures arrive late.
-    - cron: "17 3 * * *"
+    # midnight UTC
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 concurrency:
