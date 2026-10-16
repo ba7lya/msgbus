@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: MIT
+#
+# One LLVM major from apt.llvm.org, optionally registered as the default clang.
+#
+# This used to be a copy-pasted block in every job that needed clang (the build matrix, clang-format
+# and clang-tidy here, plus the nightly's clang job). It carries two hard-won details worth keeping
+# in exactly one place:
+#
+#   * priority 200, not 100. The ubuntu-24.04 image already registers its own clang/clang++ 18 at
+#     priority 100 (`set_default_clang` in its install-clang.sh), and on an exact tie
+#     update-alternatives keeps the incumbent -- `alternative_get_best` compares with a strict `>`,
+#     so a 100 here registers this compiler as a choice and then never points the link at it. Every
+#     job in the matrix then builds with clang 18 while its name says 21. That is what took the
+#     linux-clang jobs down the first time: clang 18 reports `__cpp_concepts` as 201907L, and
+#     libstdc++ gates <expected> on that macro, so the failure surfaced as
+#     `no template named 'expected' in namespace 'std'` on a compile line reading `gnu++23`.
+#
+#   * the verification grep. update-alternatives is silent when the switch does not take, so the
+#     job asserts the version it asked for rather than trusting the link.
+name: setup-llvm
+description: >-
+  Installs one LLVM major from apt.llvm.org and, when `make-default` is set, registers its
+  clang/clang++ as the default compiler and fails loudly if that does not take.
+
+inputs:
+  version:
+    description: the LLVM major, as in the `llvm-toolchain-noble-<version>` suite name
+    required: true
+  packages:
+    description: >-
+      the apt packages to install, version-suffixed as apt.llvm.org names them, separated by spaces
+      (`clang-23`, `clang-tidy-23 clang-tools-23`, `clang-format-23`). `ninja-build` is added
+      automatically.
+    required: true
+  make-default:
+    description: >-
+      whether to register clang/clang++ through update-alternatives and verify the switch took.
+      Leave false for jobs that install only a tool (clang-format) and never invoke the compiler.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: install llvm ${{ inputs.version }}
+      shell: bash
+      # the version and package list arrive through the environment rather than by interpolating
+      # straight into the script body, so a crafted input cannot become shell
+      env:
+        LLVM_VERSION: ${{ inputs.version }}
+        LLVM_PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+          | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+        echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
+          | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+        sudo apt-get update
+        # shellcheck disable=SC2086 -- LLVM_PACKAGES is a space-separated list by contract
+        sudo apt-get install -y ${LLVM_PACKAGES} ninja-build
+
+    - name: make llvm ${{ inputs.version }} the default compiler
+      if: inputs.make-default == 'true'
+      shell: bash
+      env:
+        LLVM_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        # 200, not 100: the image itself registers its own clang 18 at priority 100, and on an
+        # exact tie update-alternatives keeps the incumbent
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${LLVM_VERSION} 200
+        sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${LLVM_VERSION} 200
+        clang --version
+        clang++ --version
+        # the switch above is silent when it does not take, so make the next wrong compiler loud
+        clang++ --version | grep -q "clang version ${LLVM_VERSION}\."

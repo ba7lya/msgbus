@@ -10,12 +10,16 @@
 # It is a canary, not a second vote: the full OS x compiler x version x configuration x sanitizer
 # matrix already runs on every push, so repeating it here would spend the same wall-clock to fail
 # for the same reasons. Three jobs, one per compiler family, each on the newest series the push
-# matrix names and each with a single uninstrumented Release pass.
+# matrix names and each with a single uninstrumented pass.
 #
 # Windows is included for the reason the Linux jobs are: a port builds with a different toolchain
 # there, so a port that stops building under MSVC breaks nothing on Linux and vice versa. Naming a
 # toolset pins which compiler is *asked for*, not which one the image ships -- windows-2025-vs2026
 # is new enough to still be moving under us, and cl.exe comes from the runner, not from vcpkg.
+#
+# A canary nobody hears is not a canary: the `notify` job at the bottom turns a scheduled failure
+# into an issue, because a failed schedule otherwise notifies only whoever happens to have watch
+# notifications on and sinks without trace.
 name: nightly
 
 on:
@@ -52,10 +56,14 @@ jobs:
     # interpolate at all
     name: win-msvc-2026
     runs-on: windows-2025-vs2026
+    # as on Linux, no binary cache means every port in the manifest is compiled from source here,
+    # and this runner is the slowest of the three
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
 
       # the same toolset ci.yml names for this image. It is chosen by putting the matching cl.exe
       # on PATH rather than by the preset's toolset field, which the Ninja generators ignore, and
@@ -108,11 +116,12 @@ jobs:
         run: build\win-msvc-2026-x64\bin\Release\msgbus_example_basic_matching.exe
 
       - name: upload test results
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-results-nightly-win-msvc
           path: build/win-msvc-2026-x64/test-results.xml
+          retention-days: 7
           if-no-files-found: warn
 
   linux-gcc:
@@ -120,26 +129,20 @@ jobs:
     # available to its `name`, so `${{ env.GCC_VERSION }}` here would not interpolate at all
     name: linux-gcc-16
     runs-on: ubuntu-24.04
+    # the longest job in either workflow: no binary cache means every port in the manifest is
+    # compiled from source on this runner, vcpkg's own bootstrap included
+    timeout-minutes: 120
     env:
       GCC_VERSION: 16
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
 
-      # noble's own archive stops at gcc 14, so the newest series the push matrix names comes from
-      # the toolchain ppa. 100 matches ci.yml: nothing on the image registers gcc ahead of it
-      - name: install gcc ${{ env.GCC_VERSION }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y software-properties-common
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          sudo apt-get update
-          sudo apt-get install -y gcc-${GCC_VERSION} g++-${GCC_VERSION} ninja-build
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${GCC_VERSION} 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${GCC_VERSION} 100
-          # the switch above is silent when it does not take, so make the next wrong compiler loud
-          g++ --version | grep -q " ${GCC_VERSION}\."
+      - uses: ./.github/actions/setup-gcc
+        with:
+          version: ${{ env.GCC_VERSION }}
 
       # no vcpkgGitCommitId, unlike ci.yml: the tool comes from run-vcpkg's default branch, so a
       # regression in vcpkg itself -- or in how it drives CMake -- surfaces here rather than on the
@@ -167,17 +170,19 @@ jobs:
         run: ./build/linux-gcc-x64/bin/Release/msgbus_example_basic_matching
 
       - name: upload test results
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-results-nightly-linux-gcc
           path: build/linux-gcc-x64/test-results.xml
+          retention-days: 7
           if-no-files-found: warn
 
   linux-clang:
     # spelled out for the same reason as the gcc job above: `name` cannot read the job's own env
     name: linux-clang-23-tsan
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     env:
       LLVM_VERSION: 23
       # the instrumented pass is the one worth repeating nightly: a race that this runner's
@@ -188,22 +193,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
 
-      - name: install clang ${{ env.LLVM_VERSION }}
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
-            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y clang-${LLVM_VERSION} ninja-build
-          # 200, not 100: the image itself registers clang/clang++ 18 at priority 100, and on an
-          # exact tie update-alternatives keeps the incumbent -- `alternative_get_best` compares
-          # with a strict `>`, so a 100 here would register this compiler as a choice and then
-          # never point the link at it
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${LLVM_VERSION} 200
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${LLVM_VERSION} 200
-          clang++ --version | grep -q "clang version ${LLVM_VERSION}\."
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: clang-${{ env.LLVM_VERSION }}
 
       - uses: lukka/run-vcpkg@v11
 
@@ -227,9 +222,61 @@ jobs:
             --output-junit test-results.xml
 
       - name: upload test results
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-results-nightly-linux-clang
           path: build/linux-clang-x64${{ env.SAN }}/test-results.xml
+          retention-days: 7
           if-no-files-found: warn
+
+  # Turns a scheduled failure into something with a notification attached. It runs on `failure()`
+  # rather than `always()`, so a green nightly stays silent, and only for the cron -- a
+  # workflow_dispatch run has a human already watching its log.
+  notify:
+    name: notify
+    needs: [win-msvc, linux-gcc, linux-clang]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # the workflow declares `contents: read`; opening an issue needs one more scope, and job-level
+    # permissions are where to ask for it rather than widening the whole workflow
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const day = new Date().toISOString().slice(0, 10);
+            const title = `nightly failure ${day}`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            // one open issue is enough: without this the canary files a new one every morning
+            // until somebody looks, which is exactly how a useful signal becomes spam
+            const existing = await github.rest.issues.listForRepo({
+              ...context.repo,
+              state: 'open',
+              labels: 'nightly',
+              per_page: 100,
+            });
+            if (existing.data.some(i => i.title.startsWith('nightly failure'))) {
+              core.info('an open nightly issue already exists, not filing another');
+              return;
+            }
+
+            await github.rest.issues.create({
+              ...context.repo,
+              title,
+              labels: ['nightly'],
+              body: [
+                'The nightly canary failed.',
+                '',
+                'This run builds every vcpkg port from source with today\'s vcpkg tool, so a',
+                'failure here is usually a port or a tool regression rather than a defect in this',
+                'tree -- ci.yml pins both and is the run that says which of the two it is.',
+                '',
+                `run: ${runUrl}`,
+                `commit: ${context.sha}`,
+              ].join('\n'),
+            });

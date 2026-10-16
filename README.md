@@ -134,7 +134,8 @@ default branch rather than `VCPKG_COMMIT`, and sets `VCPKG_BINARY_SOURCES: clear
 built from source rather than restored from the cache. Three jobs — Windows/MSVC 2026, the newest
 GCC, and the newest Clang under thread sanitizer — answer "would a fresh machine still build this
 tree?" the night before a baseline bump would discover the same thing. A port builds with a different
-toolchain on Windows than on Linux, so all three are needed to say that.
+toolchain on Windows than on Linux, so all three are needed to say that. A failed scheduled run files
+a single `nightly` issue rather than notifying nobody.
 
 ## Layout
 

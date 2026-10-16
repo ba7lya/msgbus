@@ -6,12 +6,27 @@
 # The vcpkg submodule is never checked out -- it is large, and vcpkg.json already pins every port
 # version through its builtin-baseline. run-vcpkg instead clones vcpkg at exactly that baseline,
 # so the manifest resolves to the same ports the submodule would have.
+#
+# Two axes run through the matrix and they are deliberately NOT fully crossed:
+#
+#   compiler version x configuration  ->  "does this tree compile on every toolchain we claim?"
+#   sanitizer                          ->  "is the code free of memory / race / UB defects?"
+#
+# A defect the second axis finds is in our source, so it is the same defect under gcc 14, 15 and 16:
+# instrumenting every version triples the bill to detect one bug three times. So a sanitizer rides
+# only the newest compiler of each family, and the older ones run uninstrumented to keep answering
+# the compatibility question that is actually theirs. Same source, one verdict per axis.
 name: ci
 
 on:
   push:
     branches: [main]
+    # a README edit does not change what the matrix would find. The glob needs both stars and the
+    # slash: `**.md` alone does not match a path with no directory component, so it would miss
+    # README.md itself -- the one file this rule exists for.
+    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
   pull_request:
+    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
   workflow_dispatch:
 
 concurrency:
@@ -37,10 +52,24 @@ env:
     -Dba7lya.msgbus_BUILD_BENCHMARK=ON
     -Dba7lya.msgbus_BUILD_EXAMPLE=ON
 
+# Every `uses:` below still names a moving tag. Pinning them to a 40-character commit SHA is the
+# standard supply-chain hardening for actions that touch the build environment, and is worth doing
+# for at least run-vcpkg, msvc-dev-cmd and checkout -- it was left to tags here only because the
+# SHAs have to be read from the repos rather than guessed. `gh api` gives them:
+#
+#   gh api repos/actions/checkout/git/ref/tags/v7 --jq .object.sha
+#   gh api repos/lukka/run-vcpkg/git/ref/tags/v11 --jq .object.sha
+#
+# and Dependabot keeps them current once they are in place:
+#
+#   .github/dependabot.yml -> package-ecosystem: github-actions, directory: /
 jobs:
   win-msvc:
     name: win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     runs-on: ${{ matrix.os }}
+    # generous: the vcpkg binary cache misses on a cold cache and this runner is the slowest of the
+    # three anyway
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +89,12 @@ jobs:
         version: [2022, 2026]
         config: [Debug, Release]
         san: ["", "asan"]
+        exclude:
+          # as on linux, the instrument rides the newest toolset: a use-after-free is the same bug
+          # under 14.44 and 14.51, and 2022's job is here to prove the v142-era toolset still
+          # compiles the tree, which the plain pass answers on its own
+          - version: 2022
+            san: asan
         include:
           # vs 2019 is absent on purpose: the library uses std::expected, which MSVC only shipped
           # from 17.12 (vs 2022 17.12), so the v142 toolset cannot compile this tree in C++23 mode.
@@ -89,6 +124,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: false
+          # nothing in this workflow pushes, so do not leave the token behind in .git/config where
+          # a later step (or a compromised action) could read it
+          persist-credentials: false
 
       # the presets pin cl.exe by bare name, so the toolset is chosen by putting the matching
       # cl.exe on PATH rather than by the preset's toolset field (the Ninja generators ignore it)
@@ -149,17 +187,21 @@ jobs:
         shell: cmd
         run: build\${{ matrix.base }}\bin\${{ matrix.config }}\msgbus_example_basic_matching.exe
 
+      # failure(), not always(): a green run's junit is noise nobody opens, and uploading one per
+      # matrix entry per push is most of this workflow's artifact storage
       - name: upload test results
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-results-win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
           path: build/${{ matrix.base }}${{ env.SAN }}/test-results.xml
+          retention-days: 7
           if-no-files-found: warn
 
   linux-gcc:
     name: linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -171,6 +213,27 @@ jobs:
         # presets exist for the release matrix, not for a second instrumented build of the same
         # code, which would only double the job's time to check the same source twice.
         san: ["", "asan", "tsan", "ubsan"]
+        exclude:
+          # the instruments ride gcc 16 only. A use-after-free, a data race and a signed overflow
+          # are properties of this source, not of the gcc that compiled it, so 14 and 15 running
+          # them would detect the same three defects for three times the wall-clock -- while the
+          # question those two versions are actually here to answer ("does the tree still build
+          # on the oldest gcc we support?") is answered by the uninstrumented pass alone.
+          #
+          # If a sanitizer ever reports something that only reproduces on an older gcc, add that
+          # entry back by hand for the version in question; the default stays off.
+          - version: 14
+            san: asan
+          - version: 14
+            san: tsan
+          - version: 14
+            san: ubsan
+          - version: 15
+            san: asan
+          - version: 15
+            san: tsan
+          - version: 15
+            san: ubsan
         include:
           # `config` keeps the spelling the configure presets and ctest use, `config_name` is the
           # abbreviated one the job and artifact names use (dbg for Debug, rel for Release)
@@ -184,19 +247,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
 
-      # noble's own archive stops at gcc 14, so the newer series come from the toolchain ppa
-      - name: install gcc ${{ matrix.version }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y software-properties-common
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          sudo apt-get update
-          sudo apt-get install -y gcc-${{ matrix.version }} g++-${{ matrix.version }} ninja-build
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${{ matrix.version }} 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${{ matrix.version }} 100
-          gcc --version
-          g++ --version
+      - uses: ./.github/actions/setup-gcc
+        with:
+          version: ${{ matrix.version }}
 
       - uses: lukka/run-vcpkg@v11
         with:
@@ -239,16 +294,18 @@ jobs:
         run: ./build/linux-gcc-x64/bin/${{ matrix.config }}/msgbus_example_basic_matching
 
       - name: upload test results
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-results-linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
           path: build/linux-gcc-x64${{ env.SAN }}/test-results.xml
+          retention-days: 7
           if-no-files-found: warn
 
   linux-clang:
     name: linux-clang-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -260,6 +317,20 @@ jobs:
         # report every string inside gtest and spdlog as uninitialised rather than find a defect
         # in this library
         san: ["", "asan", "tsan", "ubsan"]
+        exclude:
+          # same rule as the gcc job, for the same reason: the instruments ride clang 23 only
+          - version: 21
+            san: asan
+          - version: 21
+            san: tsan
+          - version: 21
+            san: ubsan
+          - version: 22
+            san: asan
+          - version: 22
+            san: tsan
+          - version: 22
+            san: ubsan
         include:
           - config: Debug
             config_name: dbg
@@ -271,29 +342,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
 
-      - name: install clang ${{ matrix.version }}
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ matrix.version }} main" \
-            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y clang-${{ matrix.version }} ninja-build
-          # 200, not 100: the image itself already registers clang/clang++ 18 at priority 100
-          # (`set_default_clang` in its install-clang.sh), and on an exact tie update-alternatives
-          # keeps the incumbent -- `alternative_get_best` compares with a strict `>`, so a 100 here
-          # registers this compiler as a choice and then never points the link at it. Every job in
-          # the matrix then builds with clang 18 while its name says 21. That is what took the
-          # linux-clang jobs down the first time: clang 18 reports `__cpp_concepts` as 201907L, and
-          # libstdc++ gates <expected> on that macro, so the failure surfaced as
-          # `no template named 'expected' in namespace 'std'` on a compile line reading `gnu++23`.
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ matrix.version }} 200
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${{ matrix.version }} 200
-          clang --version
-          clang++ --version
-          # the switch above is silent when it does not take, so make the next wrong compiler loud
-          clang++ --version | grep -q "clang version ${{ matrix.version }}\."
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ matrix.version }}
+          packages: clang-${{ matrix.version }}
 
       - uses: lukka/run-vcpkg@v11
         with:
@@ -329,16 +383,18 @@ jobs:
         run: ./build/linux-clang-x64/bin/${{ matrix.config }}/msgbus_example_basic_matching
 
       - name: upload test results
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-results-linux-clang-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
           path: build/linux-clang-x64${{ env.SAN }}/test-results.xml
+          retention-days: 7
           if-no-files-found: warn
 
   clang-format:
     name: clang-format
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     # the .clang-format uses keys only the current llvm major understands, so the job runs the same
     # clang-format major the developers run locally rather than whichever one the image happens to
     # carry -- an older binary rejects the file outright
@@ -348,16 +404,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
 
       - name: install clang-format
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
-            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y clang-format-${LLVM_VERSION}
-          clang-format-${LLVM_VERSION} --version
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: clang-format-${{ env.LLVM_VERSION }}
+          # only the formatter is installed here, there is no clang++ to register, so skip the
+          # update-alternatives step and its version check
+          make-default: false
 
       - name: clang-format --dry-run --Werror
         run: |
@@ -369,27 +425,19 @@ jobs:
   clang-tidy:
     name: clang-tidy
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     env:
       LLVM_VERSION: 23
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
 
-      - name: install clang-tidy
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
-            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y clang-${LLVM_VERSION} clang-tidy-${LLVM_VERSION} clang-tools-${LLVM_VERSION} ninja-build
-          # 200 for the same reason as the linux-clang job: the image registers its own clang 18 at
-          # priority 100, and a tie there leaves the link pointing at 18
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${LLVM_VERSION} 200
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${LLVM_VERSION} 200
-          clang++ --version | grep -q "clang version ${LLVM_VERSION}\."
-          clang-tidy-${LLVM_VERSION} --version
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: clang-${{ env.LLVM_VERSION }} clang-tidy-${{ env.LLVM_VERSION }} clang-tools-${{ env.LLVM_VERSION }}
 
       - uses: lukka/run-vcpkg@v11
         with:
@@ -409,6 +457,11 @@ jobs:
 
       # report only: clang-tidy exits non-zero for a compiler error but not for a warning, so the
       # job surfaces the findings in its log and artifact without gating the build on them
+      #
+      # `-source-filter` selects the translation units to analyse by path. It names tests, examples
+      # and benchmark only: if the library ever grows .cxx files under include/ rather than staying
+      # header-only, add that directory here too, or they are analysed only as headers pulled in by
+      # somebody else's TU
       - name: clang-tidy
         run: |
           set -o pipefail
@@ -418,10 +471,38 @@ jobs:
             -header-filter '.*/(include|tests|examples|benchmark)/.*' \
             2>&1 | tee clang-tidy.log
 
+      # a finding nobody reads is a finding that does not exist: the log alone lives in an artifact
+      # behind a click, so the count and the first page of it also go to the job summary, which is
+      # the one surface a reviewer looks at without being told to
+      - name: summarise the findings
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## clang-tidy (clang-${LLVM_VERSION})"
+            echo
+            if [ -s clang-tidy.log ]; then
+              # grep -c exits 1 on no match, which is not a failure here
+              n=$(grep -cE '(warning|error):' clang-tidy.log || true)
+              echo "${n} finding(s)"
+              echo
+              echo '```'
+              grep -E '(warning|error):' clang-tidy.log | head -50 || true
+              echo '```'
+              if [ "${n:-0}" -gt 50 ]; then
+                echo
+                echo '_truncated at 50; the full log is in the clang-tidy-report artifact._'
+              fi
+            else
+              echo "no findings"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: upload the report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: clang-tidy-report
           path: clang-tidy.log
+          retention-days: 7
           if-no-files-found: warn

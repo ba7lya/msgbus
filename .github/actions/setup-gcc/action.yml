@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: MIT
+#
+# One GCC major from the ubuntu-toolchain-r PPA, registered as the default gcc/g++.
+#
+# This used to be a copy-pasted block in every job that needed a newer gcc (the Linux build matrix
+# here, plus the nightly's gcc job). Noble's own archive stops at gcc 14, so anything newer has to
+# come from the PPA.
+#
+# Priority 100 here, not the 200 the LLVM action uses: the ubuntu-24.04 image runs
+# `update-alternatives --install /usr/bin/gcc gcc ...` for its own gcc, so 100 both matches what the
+# image expects and still moves the link -- nothing on the image registers a *newer* gcc at a higher
+# priority, which is the tie the LLVM action has to outrank.
+name: setup-gcc
+description: >-
+  Installs one GCC major from ppa:ubuntu-toolchain-r/test, registers its gcc/g++ as the default,
+  and fails loudly if that switch does not take.
+
+inputs:
+  version:
+    description: the GCC major, as in the `gcc-<version>` package name
+    required: true
+  packages:
+    description: >-
+      extra apt packages to install alongside `gcc-<version>` and `g++-<version>`, separated by
+      spaces. `ninja-build` is added automatically.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: install gcc ${{ inputs.version }}
+      shell: bash
+      # the version and package list arrive through the environment rather than by interpolating
+      # straight into the script body, so a crafted input cannot become shell
+      env:
+        GCC_VERSION: ${{ inputs.version }}
+        EXTRA_PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y software-properties-common
+        sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+        sudo apt-get update
+        # shellcheck disable=SC2086 -- EXTRA_PACKAGES is a space-separated list by contract
+        sudo apt-get install -y gcc-${GCC_VERSION} g++-${GCC_VERSION} ninja-build ${EXTRA_PACKAGES}
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${GCC_VERSION} 100
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${GCC_VERSION} 100
+        # the switch above is silent when it does not take, so make the next wrong compiler loud
+        g++ --version | grep -q " ${GCC_VERSION}\."
