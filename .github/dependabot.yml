@@ -1,25 +1,19 @@
 # SPDX-License-Identifier: MIT
-#
-# Keeps the actions and the workflow's other pinned versions current. Dependabot opens a PR when a
-# pinned action publishes a release, which is what makes pinning to a commit SHA safe: a SHA only
-# stays correct while something compares it against upstream, and without this the pin silently
-# freezes at whatever day it was written -- including past a security fix.
+# Keeps the SHA-pinned actions current: without an upstream comparison they freeze past a
+# security fix. Weekly, off the hour and off the nightly; dependabot rewrites SHAs, not tags.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      # weekly, off the hour and off the day the nightly runs
+      # the nightly is weekly too, so keep this off its day and off the hour
       interval: weekly
       day: monday
       time: "04:23"
-    # the actions are pinned to a full commit SHA, so dependabot must write the same shape back
-    # rather than downgrading the spelling to a tag
+    # dependabot must rewrite the SHA as a full SHA, not downgrade it to a tag
     commit-message:
       prefix: "[build]"
     groups:
-      # one PR for all of them: these travel together (a matrix runs with the same checkout,
-      # run-vcpkg and upload-artifact in every job), so five separate PRs would be five runs of the
-      # full matrix to land one coherent bump
+      # one PR: these actions travel together, so one bump means one matrix run, not five
       actions:
         patterns: ["*"]

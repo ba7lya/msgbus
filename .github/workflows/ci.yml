@@ -1,29 +1,19 @@
 # SPDX-License-Identifier: MIT
 #
-# The three-job convention: one job per compiler family. Each job spans the most recent major
-# compiler releases and both Debug and Release configurations.
+# CI for the msgbus library: one job per compiler family, each spanning the newest three majors and
+# both Debug and Release configurations. The vcpkg submodule is never checked out; run-vcpkg clones
+# vcpkg at the commit vcpkg.json's builtin-baseline pins, so the manifest resolves to
+# the same ports.
 #
-# The vcpkg submodule is never checked out -- it is large, and vcpkg.json already pins every port
-# version through its builtin-baseline. run-vcpkg instead clones vcpkg at exactly that baseline,
-# so the manifest resolves to the same ports the submodule would have.
-#
-# Two axes run through the matrix and they are deliberately NOT fully crossed:
-#
-#   compiler version x configuration  ->  "does this tree compile on every toolchain we claim?"
-#   sanitizer                          ->  "is the code free of memory / race / UB defects?"
-#
-# A defect the second axis finds is in our source, so it is the same defect under gcc 14, 15 and 16:
-# instrumenting every version triples the bill to detect one bug three times. So a sanitizer rides
-# only the newest compiler of each family, and the older ones run uninstrumented to keep answering
-# the compatibility question that is actually theirs. Same source, one verdict per axis.
+# A sanitizer rides only the newest compiler of each family: a use-after-free, a race or an overflow
+# is a property of the source, not of the compiler, so older versions would find the same defect.
 name: ci
 
 on:
   push:
     branches: [main]
-    # a README edit does not change what the matrix would find. The glob needs both stars and the
-    # slash: `**.md` alone does not match a path with no directory component, so it would miss
-    # README.md itself -- the one file this rule exists for.
+    # the glob needs both stars and the slash: '**.md' alone never matches README.md, the one file
+    # this rule exists for
     paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
   pull_request:
     paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
@@ -37,64 +27,44 @@ permissions:
   contents: read
 
 env:
-  # the vcpkg commit vcpkg.json's builtin-baseline pins, so every job resolves the same ports
+  # the commit vcpkg.json's builtin-baseline pins
   VCPKG_COMMIT: e456309491fd875487bf02b8a0dca76c1b1b00cc
   VCPKG_DISABLE_METRICS: 1
-  # run-vcpkg defaults VCPKG_BINARY_SOURCES to its own 'clear;x-gha,readwrite' only when the
-  # variable is undefined, and this vcpkg has dropped the 'x-gha' backend, so every `vcpkg install`
-  # warns that it was removed. Name vcpkg's 'default' provider instead: it archives into
-  # VCPKG_DEFAULT_BINARY_CACHE, which the action already points at the directory it hands to
-  # actions/cache, so archives keep being cached and restored across runs.
+  # run-vcpkg only fills VCPKG_BINARY_SOURCES in when undefined, and its default names the x-gha
+  # backend this vcpkg dropped, so every install warns; "default" archives into the directory
+  # VCPKG_DEFAULT_BINARY_CACHE names, which run-vcpkg points at its own cache step
   VCPKG_BINARY_SOURCES: clear;default,readwrite
-  # the project's own build options, one per ${PROJECT_NAME}_BUILD_* option in the root CMakeLists
+  # the project's own build options, matching the BUILD_* options in the root CMakeLists
   MSGBUS_CONFIGURE_FLAGS: >-
     -Dba7lya.msgbus_BUILD_TEST=ON
     -Dba7lya.msgbus_BUILD_BENCHMARK=ON
     -Dba7lya.msgbus_BUILD_EXAMPLE=ON
 
-# Every `uses:` below names a commit SHA, not a moving tag -- the usual supply-chain hardening, since
-# a tag can be repointed at new code under a version people already trust. A pin only stays correct
-# while something compares it against upstream, so .github/dependabot.yml opens a PR whenever one of
-# these publishes a release, and the `# v7` comment beside each SHA is what that PR rewrites. An
-# unpinned action is not the safer choice here: it silently picks up every release, reviewed or not.
+# every `uses:` names a commit SHA not a tag; .github/dependabot.yml is what keeps the pins current,
+# and the `# vN` comment beside a pin is what that PR rewrites
 jobs:
   win-msvc:
     name: win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     runs-on: ${{ matrix.os }}
-    # generous: the vcpkg binary cache misses on a cold cache and this runner is the slowest of the
-    # three anyway
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        # one job per msvc major, debug and release each, and twice per combination: once as the
-        # compiler ships it and once built with a sanitizer. `version` is the compiler major the job
-        # exercises (as in the linux jobs) and drives the job name; `base` names the configure preset
-        # family, which is `win-msvc-<major>-<arch>`; `config` keeps the exact spelling the configure
-        # presets and ctest use (`config_name` is the abbreviated one the job and artifact names use,
-        # dbg for Debug and rel for Release).
-        #
-        # `san` names the sanitizer the second pass builds with, so the empty string is the
-        # uninstrumented pass and `asan` the instrumented one. The presets spell it `-asan`, so the
-        # job name appends `-<san>` while the preset names concatenate it: the build preset is
-        # `<base>-<config_name>` plus `-<san>` when set, the test preset `<base>-<san>-test`. msvc
-        # ships address only: cl.exe SILENTLY IGNORES /fsanitize=thread and =undefined (warning D9002,
-        # exit code 0), so a `tsan` or `ubsan` job here would go green having checked nothing.
+        # the job name appends the sanitizer while the preset names concatenate it. msvc ships
+        # address only: cl.exe silently ignores /fsanitize=thread and =undefined (warning D9002,
+        # exit code 0), so a tsan/ubsan job here would go green having checked nothing
         version: [2022, 2026]
         config: [Debug, Release]
         san: ["", "asan"]
         exclude:
-          # as on linux, the instrument rides the newest toolset: a use-after-free is the same bug
-          # under 14.44 and 14.51, and 2022's job is here to prove the v142-era toolset still
-          # compiles the tree, which the plain pass answers on its own
+          # the instrument rides the newest toolset only
           - version: 2022
             san: asan
         include:
-          # vs 2019 is absent on purpose: the library uses std::expected, which MSVC only shipped
-          # from 17.12 (vs 2022 17.12), so the v142 toolset cannot compile this tree in C++23 mode.
+          # vs 2019 is absent: std::expected needs MSVC 17.12+, so the v142 toolset cannot compile
+          # this tree in C++23 mode
           #
-          # `vsversion` selects the visual studio *instance* to activate and `toolset` the
-          # compiler inside it.
+          # vsversion selects the vs instance, toolset the compiler inside it
           - version: 2022
             os: windows-2022
             vsversion: "2022"
@@ -110,27 +80,21 @@ jobs:
           - config: Release
             config_name: rel
     env:
-      # the presets spell a sanitizer with a leading hyphen while the matrix names it bare, so the
-      # suffix is built once here: `-asan` on an instrumented entry, empty on the plain one. Every
-      # preset name below is then `<base><SAN>` or `<base>-<config_name><SAN>`.
+      # the presets spell a sanitizer with a leading hyphen while the matrix names it bare
       SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: false
-          # nothing in this workflow pushes, so do not leave the token behind in .git/config where
-          # a later step (or a compromised action) could read it
+          # nothing in this workflow pushes
           persist-credentials: false
 
-      # the presets pin cl.exe by bare name, so the toolset is chosen by putting the matching
-      # cl.exe on PATH rather than by the preset's toolset field (the Ninja generators ignore it)
+      # the presets pin cl.exe by bare name, so the toolset is chosen via PATH, not the preset's
+      # toolset field (the Ninja generators ignore it). rzlamrr/msvc-dev-cmd rather than ilammy:
+      # node24 (no node20 deprecation warning) and it knows the vs 2026 layout
       #
-      # rzlamrr/msvc-dev-cmd continues ilammy/msvc-dev-cmd 1.13 (unmaintained since 2024-04) and
-      # declares node24, so it does not draw the node20 deprecation warning. it also knows the
-      # vs 2026 layout (the `18` installation directory), which upstream does not
-      #
-      # it also has to run before any test binary: the asan runtime is a dll that lives in the
-      # toolset's bin directory, and this action is what puts that directory on PATH
+      # it must run before any test binary: the asan runtime is a DLL in the toolset bin directory
+      # and this action is what puts it on PATH
       - uses: rzlamrr/msvc-dev-cmd@70b9da25ce35e6470a3bd4be4b4a1a4929a61925 # v2
         with:
           arch: x64
@@ -154,21 +118,16 @@ jobs:
         run: cmake --build --preset ${{ matrix.base }}-${{ matrix.config_name }}${{ env.SAN }}
 
       # --output-junit resolves a relative path against the build tree the test preset points at,
-      # so the report lands beside the binaries rather than in the checkout root
+      # so the report lands beside the binaries
       #
-      # deliberately no ASAN_OPTIONS=detect_leaks=1: msvc's asan runtime does not implement leak
-      # detection, it fails every test instead of reporting the leak. the flag is honest on linux
-      # and is set there
+      # deliberately no ASAN_OPTIONS=detect_leaks=1 here: the msvc asan runtime does not implement
+      # leak detection, it fails every test instead. the flag is honest on Linux and is set there
       - name: test
         shell: cmd
         run: ctest --preset ${{ matrix.base }}${{ env.SAN }}-test -C ${{ matrix.config }} --output-junit test-results.xml
 
-      # The runtime artifacts of a configuration share one directory, so the benchmark runs from
-      # the same place the library does and the loader finds the DLL beside the executable.
-      #
-      # The instruments are left out of the smoke runs: both have already run in the plain pass,
-      # running them again under asan only doubles the job's time, and a timed benchmark measures
-      # the instrumentation rather than the library.
+      # smoke runs are gated on the plain pass: they already ran there, and a timed benchmark under
+      # an instrument measures the instrument
       - name: smoke the benchmarks
         if: matrix.san == ''
         shell: cmd
@@ -181,8 +140,7 @@ jobs:
         shell: cmd
         run: build\${{ matrix.base }}\bin\${{ matrix.config }}\msgbus_example_basic_matching.exe
 
-      # failure(), not always(): a green run's junit is noise nobody opens, and uploading one per
-      # matrix entry per push is most of this workflow's artifact storage
+      # failure(), not always(): a green run's junit is noise and would dominate artifact storage
       - name: upload test results
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -201,21 +159,10 @@ jobs:
       matrix:
         version: [14, 15, 16]
         config: [Debug, Release]
-        # gcc carries the whole family, so each job runs the tests four times: as the compiler
-        # ships them, under address, under thread and under undefined. `san` names the sanitizer
-        # bare, the `SAN` the job exports spells it `-asan`. The architecture stays x64: the x86
-        # presets exist for the release matrix, not for a second instrumented build of the same
-        # code, which would only double the job's time to check the same source twice.
         san: ["", "asan", "tsan", "ubsan"]
         exclude:
-          # the instruments ride gcc 16 only. A use-after-free, a data race and a signed overflow
-          # are properties of this source, not of the gcc that compiled it, so 14 and 15 running
-          # them would detect the same three defects for three times the wall-clock -- while the
-          # question those two versions are actually here to answer ("does the tree still build
-          # on the oldest gcc we support?") is answered by the uninstrumented pass alone.
-          #
-          # If a sanitizer ever reports something that only reproduces on an older gcc, add that
-          # entry back by hand for the version in question; the default stays off.
+          # as in the header: an instrument is a property of the source, not of the compiler, so
+          # 14 and 15 would detect the same defect again rather than a second one
           - version: 14
             san: asan
           - version: 14
@@ -229,8 +176,8 @@ jobs:
           - version: 15
             san: ubsan
         include:
-          # `config` keeps the spelling the configure presets and ctest use, `config_name` is the
-          # abbreviated one the job and artifact names use (dbg for Debug, rel for Release)
+          # config keeps the spelling the presets and ctest use, config_name the abbreviated one
+          # the job and artifact names use (dbg / rel)
           - config: Debug
             config_name: dbg
           - config: Release
@@ -262,11 +209,10 @@ jobs:
         run: cmake --build --preset linux-gcc-x64-${{ matrix.config_name }}${{ env.SAN }}
 
       # --output-junit resolves a relative path against the build tree the test preset points at,
-      # so the report lands beside the binaries rather than in the checkout root
+      # so the report lands beside the binaries
       #
-      # the runtime options are set here and only here: halt_on_error makes the non-zero exit the
-      # sanitizer takes on a finding the one the job fails on, rather than depending on a default,
-      # and print_stacktrace turns an undefined-behaviour diagnostic into a locatable one
+      # halt_on_error turns a finding's non-zero exit into the one the job fails on;
+      # print_stacktrace makes a UB diagnostic locatable
       - name: test
         env:
           ASAN_OPTIONS: detect_leaks=1
@@ -276,9 +222,8 @@ jobs:
           ctest --preset linux-gcc-x64${{ env.SAN }}-test -C ${{ matrix.config }} \
             --output-junit test-results.xml
 
-      # the smoke runs are left to the plain pass: both have already run there, running them again
-      # under an instrument only doubles the job's time, and a timed benchmark would then measure
-      # the instrumentation rather than the library
+      # gated on the plain pass: they already ran there, and a timed benchmark under an instrument
+      # measures the instrument
       - name: smoke the benchmarks
         if: matrix.san == ''
         run: ./build/linux-gcc-x64/bin/${{ matrix.config }}/msgbus_benchmark --benchmark_min_time=0.01s
@@ -305,14 +250,11 @@ jobs:
       matrix:
         version: [21, 22, 23]
         config: [Debug, Release]
-        # the same four passes as the gcc job, x64 for the same reason. clang is the one toolchain
-        # that could also carry memory (msan), and it is deliberately absent: msan needs every
-        # dependency built with it, and pointing the preset at vcpkg's precompiled ports would
-        # report every string inside gtest and spdlog as uninitialised rather than find a defect
-        # in this library
+        # msan is deliberately absent on clang: it needs every dependency built with it, and vcpkg
+        # ports are precompiled, so it would report strings inside gtest/spdlog as uninitialised
         san: ["", "asan", "tsan", "ubsan"]
         exclude:
-          # same rule as the gcc job, for the same reason: the instruments ride clang 23 only
+          # the instruments ride the newest compiler only, as in the gcc job
           - version: 21
             san: asan
           - version: 21
@@ -358,7 +300,7 @@ jobs:
         run: cmake --build --preset linux-clang-x64-${{ matrix.config_name }}${{ env.SAN }}
 
       # --output-junit resolves a relative path against the build tree the test preset points at,
-      # so the report lands beside the binaries rather than in the checkout root
+      # so the report lands beside the binaries
       - name: test
         env:
           ASAN_OPTIONS: detect_leaks=1
@@ -389,9 +331,7 @@ jobs:
     name: clang-format
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # the .clang-format uses keys only the current llvm major understands, so the job runs the same
-    # clang-format major the developers run locally rather than whichever one the image happens to
-    # carry -- an older binary rejects the file outright
+    # LLVM 23 because .clang-format uses keys an older binary rejects outright
     env:
       LLVM_VERSION: 23
     steps:
@@ -405,8 +345,7 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
           packages: clang-format-${{ env.LLVM_VERSION }}
-          # only the formatter is installed here, there is no clang++ to register, so skip the
-          # update-alternatives step and its version check
+          # the formatter is the only binary here, so skip the update-alternatives step
           make-default: false
 
       - name: clang-format --dry-run --Werror
@@ -437,8 +376,7 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
-      # the analysis needs the exact flags each translation unit is built with, so it reads the
-      # compile database the configure step writes rather than guessing a command line
+      # clang-tidy reads the compile database rather than guessing a command line
       - name: configure
         run: >
           cmake --preset linux-clang-x64
@@ -449,13 +387,10 @@ jobs:
       - name: assert the compile database exists
         run: test -s build/linux-clang-x64/compile_commands.json
 
-      # report only: clang-tidy exits non-zero for a compiler error but not for a warning, so the
-      # job surfaces the findings in its log and artifact without gating the build on them
+      # report only: clang-tidy exits non-zero for a compiler error but not for a warning
       #
-      # `-source-filter` selects the translation units to analyse by path. It names tests, examples
-      # and benchmark only: if the library ever grows .cxx files under include/ rather than staying
-      # header-only, add that directory here too, or they are analysed only as headers pulled in by
-      # somebody else's TU
+      # -source-filter names tests/examples/benchmark only: .cxx files added under include/ would
+      # need adding there too
       - name: clang-tidy
         run: |
           set -o pipefail
@@ -465,9 +400,8 @@ jobs:
             -header-filter '.*/(include|tests|examples|benchmark)/.*' \
             2>&1 | tee clang-tidy.log
 
-      # a finding nobody reads is a finding that does not exist: the log alone lives in an artifact
-      # behind a click, so the count and the first page of it also go to the job summary, which is
-      # the one surface a reviewer looks at without being told to
+      # the log alone sits behind an artifact click, so the count and first page also go to the job
+      # summary
       - name: summarise the findings
         if: always()
         run: |

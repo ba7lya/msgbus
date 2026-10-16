@@ -1,40 +1,21 @@
 # SPDX-License-Identifier: MIT
 #
-# The nightly run exists for the one axis a push-triggered run cannot cover: the world moving.
-# ci.yml pins the vcpkg tool by VCPKG_COMMIT and reuses its binary cache, so it answers "does this
-# tree still build on the toolchain we froze?" This workflow deliberately does neither -- it takes
-# today's vcpkg tool, keeps no binary cache, and builds every port from source -- so it answers
-# "would a fresh machine still build this tree?", and answers it before a baseline bump discovers
-# the same thing mid-release.
-#
-# It is a canary, not a second vote: the full OS x compiler x version x configuration x sanitizer
-# matrix already runs on every push, so repeating it here would spend the same wall-clock to fail
-# for the same reasons. Three jobs, one per compiler family, each on the newest series the push
-# matrix names and each with a single uninstrumented pass.
-#
-# Windows is included for the reason the Linux jobs are: a port builds with a different toolchain
-# there, so a port that stops building under MSVC breaks nothing on Linux and vice versa. Naming a
-# toolset pins which compiler is *asked for*, not which one the image ships -- windows-2025-vs2026
-# is new enough to still be moving under us, and cl.exe comes from the runner, not from vcpkg.
-#
-# A canary nobody hears is not a canary: the `notify` job at the bottom turns a scheduled failure
-# into an issue, because a failed schedule otherwise notifies only whoever happens to have watch
-# notifications on and sinks without trace.
+# Nightly canary, not a second vote: the push matrix already crosses OS x compiler x
+# version x config x sanitizer, so repeating it would fail for the same reasons. This run
+# instead takes today's vcpkg tool and keeps no binary cache -- ci.yml pins both -- so it
+# answers "would a fresh machine still build this tree?" before a baseline bump finds out.
 name: nightly
 
 on:
   schedule:
-    # 03:47 UTC, not midnight: every scheduled workflow on GitHub defaults to the top of the hour,
-    # and midnight UTC is the most contended slot of all because it is also when each timezone's
-    # own daily jobs land. A delayed queue does not make the canary wrong, only late, but a run that
-    # drifts far enough can start after the working day it was supposed to precede. :47 is off both
-    # the hour and the half, which is where the pressure actually is.
+    # 03:47 UTC, off the hour and the half: the top of the hour is the most contended
+    # slot, where a delayed queue can push the run past the working day it should precede.
     - cron: "47 3 * * *"
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}
-  # a nightly is not worth cancelling: it exists to find the one failure the push CI did not
+  # a nightly is not worth cancelling
   cancel-in-progress: false
 
 permissions:
@@ -42,11 +23,10 @@ permissions:
 
 env:
   VCPKG_DISABLE_METRICS: 1
-  # no binary cache, where ci.yml names vcpkg's 'default' provider: the ports are exactly what a
-  # baseline bump would move, so building them from source every night is the point rather than
-  # the cost. 'clear' alone leaves vcpkg with no provider at all, which is what forces the rebuild.
+  # 'clear' leaves vcpkg with no provider at all, which forces every port to build from
+  # source -- exactly what a baseline bump would move, so rebuilding nightly is the point.
   VCPKG_BINARY_SOURCES: clear
-  # the project's own build options, one per ${PROJECT_NAME}_BUILD_* option in the root CMakeLists
+  # the project's own build options, one per build-* option in the root CMakeLists
   MSGBUS_CONFIGURE_FLAGS: >-
     -Dba7lya.msgbus_BUILD_TEST=ON
     -Dba7lya.msgbus_BUILD_BENCHMARK=ON
@@ -54,13 +34,11 @@ env:
 
 jobs:
   win-msvc:
-    # the version is spelled out rather than read from env, here as in the Linux jobs below: a
-    # job's own `env` context is not available to its `name`, so `${{ env.VS_VERSION }}` would not
-    # interpolate at all
+    # a vcpkg port builds with a different toolchain under MSVC than on Linux
+    # the version is spelled out because a job's own `env` cannot be read from its `name`
     name: win-msvc-2026
     runs-on: windows-2025-vs2026
-    # as on Linux, no binary cache means every port in the manifest is compiled from source here,
-    # and this runner is the slowest of the three
+    # no binary cache means every port is compiled from source here, slowest of the three
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -68,19 +46,15 @@ jobs:
           submodules: false
           persist-credentials: false
 
-      # the same toolset ci.yml names for this image. It is chosen by putting the matching cl.exe
-      # on PATH rather than by the preset's toolset field, which the Ninja generators ignore, and
-      # the step has to come before any test binary: the asan runtime is a dll that lives in the
-      # toolset's bin directory, and this action is what puts that directory on PATH
+      # the toolset ci.yml names, selected by putting the matching cl.exe on PATH: the Ninja
+      # generators ignore the preset's toolset field
       - uses: rzlamrr/msvc-dev-cmd@70b9da25ce35e6470a3bd4be4b4a1a4929a61925 # v2
         with:
           arch: x64
           vsversion: "2026"
           toolset: "14.51"
 
-      # identical to the Linux jobs: no vcpkgGitCommitId, so the tool comes from run-vcpkg's
-      # default branch and VCPKG_BINARY_SOURCES stays clear at the workflow level, which is what
-      # makes every port build from source here too
+      # no vcpkgGitCommitId: the tool comes from run-vcpkg's default branch
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
 
       - name: configure
@@ -95,19 +69,13 @@ jobs:
         shell: cmd
         run: cmake --build --preset win-msvc-2026-x64-rel
 
-      # --output-junit resolves a relative path against the build tree the test preset points at,
-      # so the report lands beside the binaries rather than in the checkout root
-      #
-      # no ASAN_OPTIONS=detect_leaks=1, for the reason ci.yml gives: msvc's asan runtime does not
-      # implement leak detection, it fails every test instead of reporting the leak. This pass is
-      # uninstrumented anyway; the nightly list keeps no asan entry, since the push matrix has
-      # already run one on every commit
+      # no ASAN_OPTIONS=detect_leaks=1, as in ci.yml: msvc's asan runtime does not implement
+      # leak detection. --output-junit resolves beside the binaries, not the checkout root.
       - name: test
         shell: cmd
         run: ctest --preset win-msvc-2026-x64-test -C Release --output-junit test-results.xml
 
-      # the runtime artifacts of a configuration share one directory, so the benchmark runs from
-      # the same place the library does and the loader finds the DLL beside the executable
+      # the runtime artifacts of a configuration share one directory, so the loader finds the DLL
       - name: smoke the benchmarks
         shell: cmd
         run: >
@@ -128,12 +96,10 @@ jobs:
           if-no-files-found: warn
 
   linux-gcc:
-    # the version is spelled out rather than read from env: a job's own `env` context is not
-    # available to its `name`, so `${{ env.GCC_VERSION }}` here would not interpolate at all
+    # the version is spelled out: a job's own `env` context is not available to its `name`
     name: linux-gcc-16
     runs-on: ubuntu-24.04
-    # the longest job in either workflow: no binary cache means every port in the manifest is
-    # compiled from source on this runner, vcpkg's own bootstrap included
+    # the longest job in either workflow: no binary cache, so every port builds from source
     timeout-minutes: 120
     env:
       GCC_VERSION: 16
@@ -148,9 +114,7 @@ jobs:
           version: ${{ env.GCC_VERSION }}
 
       # no vcpkgGitCommitId, unlike ci.yml: the tool comes from run-vcpkg's default branch, so a
-      # regression in vcpkg itself -- or in how it drives CMake -- surfaces here rather than on the
-      # day the pinned commit is bumped. The port *versions* do stay pinned either way: manifest
-      # mode resolves them from vcpkg.json's builtin-baseline, not from the tool's own tree.
+      # vcpkg regression surfaces here; port versions stay pinned by vcpkg.json's baseline.
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
 
       - name: configure
@@ -182,15 +146,14 @@ jobs:
           if-no-files-found: warn
 
   linux-clang:
-    # spelled out for the same reason as the gcc job above: `name` cannot read the job's own env
+    # spelled out for the same reason as the gcc job: `name` cannot read the job's own env
     name: linux-clang-23-tsan
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       LLVM_VERSION: 23
-      # the instrumented pass is the one worth repeating nightly: a race that this runner's
-      # scheduling happens to hide today is precisely what tomorrow's run is there to find, and
-      # the plain pass has already run on the push that produced this commit
+      # the instrumented pass is the one worth repeating: a race this runner hides today is what
+      # tomorrow's run is there to find, and the plain pass already ran on the push
       SAN: "-tsan"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -215,8 +178,8 @@ jobs:
       - name: build
         run: cmake --build --preset linux-clang-x64-rel${{ env.SAN }}
 
-      # no smoke runs here, for the reason ci.yml gives: both have already run in the plain pass,
-      # and a timed benchmark under an instrument measures the instrument rather than the library
+      # no smoke runs: both already ran in the plain pass, and a timed benchmark under an
+      # instrument would measure the instrument
       - name: test
         env:
           TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
@@ -233,17 +196,15 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-  # Turns a scheduled failure into something with a notification attached. It runs on `failure()`
-  # rather than `always()`, so a green nightly stays silent, and only for the cron -- a
-  # workflow_dispatch run has a human already watching its log.
+  # a scheduled failure becomes an issue; failure() not always(), so a green nightly stays
+  # silent, and only for the cron -- a workflow_dispatch has a human watching its log
   notify:
     name: notify
     needs: [win-msvc, linux-gcc, linux-clang]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # the workflow declares `contents: read`; opening an issue needs one more scope, and job-level
-    # permissions are where to ask for it rather than widening the whole workflow
+    # opening an issue needs one more scope than the workflow's `contents: read`
     permissions:
       contents: read
       issues: write
@@ -255,8 +216,7 @@ jobs:
             const title = `nightly failure ${day}`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
-            // one open issue is enough: without this the canary files a new one every morning
-            // until somebody looks, which is exactly how a useful signal becomes spam
+            // one open issue is enough, else the canary files a new spam issue every morning
             const existing = await github.rest.issues.listForRepo({
               ...context.repo,
               state: 'open',

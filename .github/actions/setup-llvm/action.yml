@@ -1,22 +1,6 @@
 # SPDX-License-Identifier: MIT
-#
 # One LLVM major from apt.llvm.org, optionally registered as the default clang.
-#
-# This used to be a copy-pasted block in every job that needed clang (the build matrix, clang-format
-# and clang-tidy here, plus the nightly's clang job). It carries two hard-won details worth keeping
-# in exactly one place:
-#
-#   * priority 200, not 100. The ubuntu-24.04 image already registers its own clang/clang++ 18 at
-#     priority 100 (`set_default_clang` in its install-clang.sh), and on an exact tie
-#     update-alternatives keeps the incumbent -- `alternative_get_best` compares with a strict `>`,
-#     so a 100 here registers this compiler as a choice and then never points the link at it. Every
-#     job in the matrix then builds with clang 18 while its name says 21. That is what took the
-#     linux-clang jobs down the first time: clang 18 reports `__cpp_concepts` as 201907L, and
-#     libstdc++ gates <expected> on that macro, so the failure surfaced as
-#     `no template named 'expected' in namespace 'std'` on a compile line reading `gnu++23`.
-#
-#   * the verification grep. update-alternatives is silent when the switch does not take, so the
-#     job asserts the version it asked for rather than trusting the link.
+# The install priority is load-bearing: see the comment on the update-alternatives step.
 name: setup-llvm
 description: >-
   Installs one LLVM major from apt.llvm.org and, when `make-default` is set, registers its
@@ -44,8 +28,7 @@ runs:
   steps:
     - name: install llvm ${{ inputs.version }}
       shell: bash
-      # the version and package list arrive through the environment rather than by interpolating
-      # straight into the script body, so a crafted input cannot become shell
+      # inputs arrive via the environment, so a crafted input cannot become shell
       env:
         LLVM_VERSION: ${{ inputs.version }}
         LLVM_PACKAGES: ${{ inputs.packages }}
@@ -66,11 +49,12 @@ runs:
         LLVM_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        # 200, not 100: the image itself registers its own clang 18 at priority 100, and on an
-        # exact tie update-alternatives keeps the incumbent
+        # 200, not 100: the image registers clang 18 at 100, and on a tie update-alternatives keeps
+        # the incumbent, so 100 would never point the link at this compiler
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${LLVM_VERSION} 200
         sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${LLVM_VERSION} 200
         clang --version
         clang++ --version
-        # the switch above is silent when it does not take, so make the next wrong compiler loud
+        # update-alternatives is silent when the switch does not take, so assert the version that
+        # was asked for
         clang++ --version | grep -q "clang version ${LLVM_VERSION}\."
