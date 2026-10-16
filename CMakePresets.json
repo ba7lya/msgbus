@@ -12,6 +12,9 @@
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
+        "ba7lya.msgbus_BUILD_BENCHMARK": true,
+        "ba7lya.msgbus_BUILD_EXAMPLE": true,
+        "ba7lya.msgbus_BUILD_TEST": true,
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_C_COMPILER": "clang",
@@ -100,6 +103,9 @@
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
+        "ba7lya.msgbus_BUILD_BENCHMARK": true,
+        "ba7lya.msgbus_BUILD_EXAMPLE": true,
+        "ba7lya.msgbus_BUILD_TEST": true,
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "CMAKE_CXX_COMPILER": "g++",
         "CMAKE_C_COMPILER": "gcc",
@@ -196,6 +202,9 @@
       },
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
+        "ba7lya.msgbus_BUILD_BENCHMARK": true,
+        "ba7lya.msgbus_BUILD_EXAMPLE": true,
+        "ba7lya.msgbus_BUILD_TEST": true,
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "CMAKE_CXX_COMPILER": "cl.exe",
         "CMAKE_C_COMPILER": "cl.exe",
@@ -241,6 +250,9 @@
       },
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
+        "ba7lya.msgbus_BUILD_BENCHMARK": true,
+        "ba7lya.msgbus_BUILD_EXAMPLE": true,
+        "ba7lya.msgbus_BUILD_TEST": true,
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "CMAKE_CXX_COMPILER": "cl.exe",
         "CMAKE_C_COMPILER": "cl.exe",
@@ -286,6 +298,9 @@
       },
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
+        "ba7lya.msgbus_BUILD_BENCHMARK": true,
+        "ba7lya.msgbus_BUILD_EXAMPLE": true,
+        "ba7lya.msgbus_BUILD_TEST": true,
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "CMAKE_CXX_COMPILER": "cl.exe",
         "CMAKE_C_COMPILER": "cl.exe",
@@ -331,6 +346,9 @@
       },
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
+        "ba7lya.msgbus_BUILD_BENCHMARK": true,
+        "ba7lya.msgbus_BUILD_EXAMPLE": true,
+        "ba7lya.msgbus_BUILD_TEST": true,
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "CMAKE_CXX_COMPILER": "cl.exe",
         "CMAKE_C_COMPILER": "cl.exe",
