@@ -280,10 +280,20 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y clang-${{ matrix.version }} ninja-build
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ matrix.version }} 100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${{ matrix.version }} 100
+          # 200, not 100: the image itself already registers clang/clang++ 18 at priority 100
+          # (`set_default_clang` in its install-clang.sh), and on an exact tie update-alternatives
+          # keeps the incumbent -- `alternative_get_best` compares with a strict `>`, so a 100 here
+          # registers this compiler as a choice and then never points the link at it. Every job in
+          # the matrix then builds with clang 18 while its name says 21. That is what took the
+          # linux-clang jobs down the first time: clang 18 reports `__cpp_concepts` as 201907L, and
+          # libstdc++ gates <expected> on that macro, so the failure surfaced as
+          # `no template named 'expected' in namespace 'std'` on a compile line reading `gnu++23`.
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ matrix.version }} 200
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${{ matrix.version }} 200
           clang --version
           clang++ --version
+          # the switch above is silent when it does not take, so make the next wrong compiler loud
+          clang++ --version | grep -q "clang version ${{ matrix.version }}\."
 
       - uses: lukka/run-vcpkg@v11
         with:
@@ -374,8 +384,11 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y clang-${LLVM_VERSION} clang-tidy-${LLVM_VERSION} clang-tools-${LLVM_VERSION} ninja-build
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${LLVM_VERSION} 100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${LLVM_VERSION} 100
+          # 200 for the same reason as the linux-clang job: the image registers its own clang 18 at
+          # priority 100, and a tie there leaves the link pointing at 18
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${LLVM_VERSION} 200
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${LLVM_VERSION} 200
+          clang++ --version | grep -q "clang version ${LLVM_VERSION}\."
           clang-tidy-${LLVM_VERSION} --version
 
       - uses: lukka/run-vcpkg@v11
