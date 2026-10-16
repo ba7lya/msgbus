@@ -41,6 +41,24 @@ if (WIN32)
     add_definitions(-DNOMINMAX)            # disable C2589 min()/max() error
 endif()
 
+# --- output layout ---
+# Every runtime artifact of a configuration lands in one directory: `${CMAKE_BINARY_DIR}/bin/<config>`.
+# One directory rather than the default per-target tree (`build/<preset>/tests/Debug/`) for two
+# reasons. The loader is the first: the tests link a shared GTest, so `gtest.dll` is placed beside each
+# executable and a single directory means one copy instead of one per subdirectory. The second is that
+# a smoke run and a bug report can then name one path -- `build/<preset>/bin/<config>/<target>` -- for
+# every configuration of every preset, which is what CI's `smoke the benchmarks` / `smoke the examples`
+# steps already assume.
+#
+# Ninja Multi-Config expands the `$<CONFIG>` generator expression per configuration, so one setting
+# covers Debug and Release; single-config generators have it expand to the one configuration they were
+# configured for, which keeps the layout flat but not wrong. The libraries (here: none, this target is
+# INTERFACE) are placed alongside so a future non-header-only target cannot end up split from the
+# executables that load it.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+
 # --- modules ---
 add_subdirectory(thirdparty)
 
