@@ -129,6 +129,13 @@ precompiled. Thread sanitizer runs with the dependencies uninstrumented — the 
 Dependencies come from vcpkg, pinned by `VCPKG_COMMIT`; the vcpkg submodule is never checked out, since
 `vcpkg.json`'s `builtin-baseline` already pins every port version.
 
+`.github/workflows/nightly.yml` covers the axis a push-triggered run cannot: it takes vcpkg's current
+default branch rather than `VCPKG_COMMIT`, and sets `VCPKG_BINARY_SOURCES: clear` so every port is
+built from source rather than restored from the cache. Two jobs — the newest GCC and the newest
+Clang, the latter under thread sanitizer — answer "would a fresh machine still build this tree?" the
+night before a baseline bump would discover the same thing. Windows is absent: that runner pins its
+toolset by name, so the compiler cannot drift under it.
+
 ## Layout
 
 ```

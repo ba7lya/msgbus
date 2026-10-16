@@ -1,0 +1,165 @@
+# SPDX-License-Identifier: MIT
+#
+# The nightly run exists for the one axis a push-triggered run cannot cover: the world moving.
+# ci.yml pins the vcpkg tool by VCPKG_COMMIT and reuses its binary cache, so it answers "does this
+# tree still build on the toolchain we froze?" This workflow deliberately does neither -- it takes
+# today's vcpkg tool, keeps no binary cache, and builds every port from source -- so it answers
+# "would a fresh machine still build this tree?", and answers it before a baseline bump discovers
+# the same thing mid-release.
+#
+# It is a canary, not a second vote: the full OS x compiler x version x configuration x sanitizer
+# matrix already runs on every push, so repeating it here would spend the same wall-clock to fail
+# for the same reasons. Two jobs, one per Linux compiler family, each on the newest series the
+# push matrix names and each with a single pass.
+#
+# Windows is absent on purpose. That job pins its toolset by name (14.44 / 14.51) and rustles it
+# into place with msvc-dev-cmd, so the compiler cannot drift under us whatever the image does --
+# the only drift left on that runner is vcpkg-side, which these two jobs already exercise.
+name: nightly
+
+on:
+  schedule:
+    # 03:17 UTC, deliberately off the hour: GitHub's cron queue is busiest at :00, and a scheduled
+    # run that sits in the queue is a run whose failures arrive late.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  # a nightly is not worth cancelling: it exists to find the one failure the push CI did not
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  VCPKG_DISABLE_METRICS: 1
+  # no binary cache, where ci.yml names vcpkg's 'default' provider: the ports are exactly what a
+  # baseline bump would move, so building them from source every night is the point rather than
+  # the cost. 'clear' alone leaves vcpkg with no provider at all, which is what forces the rebuild.
+  VCPKG_BINARY_SOURCES: clear
+  # the project's own build options, one per ${PROJECT_NAME}_BUILD_* option in the root CMakeLists
+  MSGBUS_CONFIGURE_FLAGS: >-
+    -Dba7lya.msgbus_BUILD_TEST=ON
+    -Dba7lya.msgbus_BUILD_BENCHMARK=ON
+    -Dba7lya.msgbus_BUILD_EXAMPLE=ON
+
+jobs:
+  linux-gcc:
+    # the version is spelled out rather than read from env: a job's own `env` context is not
+    # available to its `name`, so `${{ env.GCC_VERSION }}` here would not interpolate at all
+    name: linux-gcc-16
+    runs-on: ubuntu-24.04
+    env:
+      GCC_VERSION: 16
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      # noble's own archive stops at gcc 14, so the newest series the push matrix names comes from
+      # the toolchain ppa. 100 matches ci.yml: nothing on the image registers gcc ahead of it
+      - name: install gcc ${{ env.GCC_VERSION }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y gcc-${GCC_VERSION} g++-${GCC_VERSION} ninja-build
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${GCC_VERSION} 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${GCC_VERSION} 100
+          # the switch above is silent when it does not take, so make the next wrong compiler loud
+          g++ --version | grep -q " ${GCC_VERSION}\."
+
+      # no vcpkgGitCommitId, unlike ci.yml: the tool comes from run-vcpkg's default branch, so a
+      # regression in vcpkg itself -- or in how it drives CMake -- surfaces here rather than on the
+      # day the pinned commit is bumped. The port *versions* do stay pinned either way: manifest
+      # mode resolves them from vcpkg.json's builtin-baseline, not from the tool's own tree.
+      - uses: lukka/run-vcpkg@v11
+
+      - name: configure
+        run: >
+          cmake --preset linux-gcc-x64
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          $MSGBUS_CONFIGURE_FLAGS
+
+      - name: build
+        run: cmake --build --preset linux-gcc-x64-rel
+
+      - name: test
+        run: ctest --preset linux-gcc-x64-test -C Release --output-junit test-results.xml
+
+      - name: smoke the benchmarks
+        run: ./build/linux-gcc-x64/bin/Release/msgbus_benchmark --benchmark_min_time=0.01s
+
+      - name: smoke the examples
+        run: ./build/linux-gcc-x64/bin/Release/msgbus_example_basic_matching
+
+      - name: upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-nightly-linux-gcc
+          path: build/linux-gcc-x64/test-results.xml
+          if-no-files-found: warn
+
+  linux-clang:
+    # spelled out for the same reason as the gcc job above: `name` cannot read the job's own env
+    name: linux-clang-23-tsan
+    runs-on: ubuntu-24.04
+    env:
+      LLVM_VERSION: 23
+      # the instrumented pass is the one worth repeating nightly: a race that this runner's
+      # scheduling happens to hide today is precisely what tomorrow's run is there to find, and
+      # the plain pass has already run on the push that produced this commit
+      SAN: "-tsan"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: install clang ${{ env.LLVM_VERSION }}
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y clang-${LLVM_VERSION} ninja-build
+          # 200, not 100: the image itself registers clang/clang++ 18 at priority 100, and on an
+          # exact tie update-alternatives keeps the incumbent -- `alternative_get_best` compares
+          # with a strict `>`, so a 100 here would register this compiler as a choice and then
+          # never point the link at it
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${LLVM_VERSION} 200
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${LLVM_VERSION} 200
+          clang++ --version | grep -q "clang version ${LLVM_VERSION}\."
+
+      - uses: lukka/run-vcpkg@v11
+
+      - name: configure
+        run: >
+          cmake --preset linux-clang-x64${{ env.SAN }}
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          $MSGBUS_CONFIGURE_FLAGS
+
+      - name: build
+        run: cmake --build --preset linux-clang-x64-rel${{ env.SAN }}
+
+      # no smoke runs here, for the reason ci.yml gives: both have already run in the plain pass,
+      # and a timed benchmark under an instrument measures the instrument rather than the library
+      - name: test
+        env:
+          TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+        run: |
+          ctest --preset linux-clang-x64${{ env.SAN }}-test -C Release \
+            --output-junit test-results.xml
+
+      - name: upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-nightly-linux-clang
+          path: build/linux-clang-x64${{ env.SAN }}/test-results.xml
+          if-no-files-found: warn
