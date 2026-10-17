@@ -177,7 +177,7 @@ TEST(parse_test, a_topic_rejects_every_wildcard) {
 }
 
 TEST(parse_test, a_topic_rejects_a_glued_wildcard_as_a_stray_wildcard) {
-    // Not `wildcard_in_topic`: the level is neither `+` nor `#`, so the wildcard is misplaced rather than
+    // Not `WILDCARD_IN_TOPIC`: the level is neither `+` nor `#`, so the wildcard is misplaced rather than
     // simply disallowed here.
     expect_parse_error("device+/temp", false, error_code::INVALID_WILDCARD, 6);
 }

@@ -126,8 +126,8 @@ public:
     /// start would only move a creation failure into a submit path that has no error channel. One
     /// thread per executor, never a shared pool: the isolation — a handler on executor X always running
     /// on the same thread — is the whole reason a subscriber names one, and a pool would forfeit it.
-    /// `capacity == UNBOUNDED` makes every policy inert: `has_room()` is always true, so BLOCK never
-    /// blocks, DROP_OLDEST never evicts and DROP_NEW never rejects.
+    /// `capacity == UNBOUNDED` makes every policy inert: `has_room()` is always true, so `BLOCK` never
+    /// blocks, `DROP_OLDEST` never evicts and `DROP_NEW` never rejects.
     /// @throws std::system_error if the worker thread cannot be created.
     explicit executor(std::size_t capacity = UNBOUNDED, exception_sink on_exception = {})
         : capacity_(capacity)
@@ -148,19 +148,19 @@ public:
     /// @brief Hands `item` to this executor, applying `policy` when the queue is full.
     /// @param item the closure to run; must not be empty
     /// @param policy what to do when the queue is full; ignored while there is room
-    /// @return ACCEPTED, DROPPED_OLDEST, REJECTED or CLOSED
+    /// @return `ACCEPTED`, `DROPPED_OLDEST`, `REJECTED` or `CLOSED`
     /// @throws std::invalid_argument if `item` is empty — a programming error, not a queue outcome.
     /// @details The policy is per submit, not fixed at construction: `dispatch_options` carries it per
-    /// subscription, so one executor serving a telemetry pattern (DROP_OLDEST) and a command pattern
-    /// (DROP_NEW) must honour each.
+    /// subscription, so one executor serving a telemetry pattern (`DROP_OLDEST`) and a command pattern
+    /// (`DROP_NEW`) must honour each.
     /// @details A submit from this executor's own worker never queues, under any policy: the worker is
-    /// the only thread that could free a slot, so BLOCK would wait for itself; DROP_OLDEST would evict a
-    /// sibling the worker could run now; DROP_NEW would refuse work it can run now. The closure runs
+    /// the only thread that could free a slot, so `BLOCK` would wait for itself; `DROP_OLDEST` would evict a
+    /// sibling the worker could run now; `DROP_NEW` would refuse work it can run now. The closure runs
     /// inline instead, before anything still queued. This is not a corner case — a handler on X that
     /// publishes synchronously into a topic routed back to X reaches it through the public API — so it
     /// is prevented rather than documented away. A chain of such submits recurses; bounding it would be
     /// a second policy the executor has no basis to choose.
-    /// @note After `close()` or `release()`, every policy returns CLOSED.
+    /// @note After `close()` or `release()`, every policy returns closed.
     [[nodiscard]]
     submit_status submit(work_item item, back_pressure policy = back_pressure::DROP_OLDEST) {
         if (!item) { throw std::invalid_argument("the work item must not be empty"); }

@@ -82,7 +82,7 @@ events is worth a line.
 ```cpp
 #include "logger.hxx"
 
-bus_log(direction::publish_sync, "site/line1/device7/sensor/temperature", reading);
+bus_log(direction::PUBLISH_SYNC, "site/line1/device7/sensor/temperature", reading);
 // 2026-10-17 01:14:13.630 [19952] PUB(sync)  site/line1/device7/sensor/temperature  23175
 // 2026-10-17 01:14:13.630 [19952] SUB        site/line1/device7/sensor/temperature  23175  (line-reader)
 ```

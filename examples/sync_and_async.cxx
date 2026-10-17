@@ -270,7 +270,7 @@ int main() {
        && arm(topic_readings,
               [&reader](const message& msg) {
                   reader.record(std::any_cast<std::uint64_t>(msg.payload_));
-                  bus_log(direction::subscribe, msg.topic_, msg.payload_, "reader");
+                  bus_log(direction::SUBSCRIBE, msg.topic_, msg.payload_, "reader");
               })
        && arm(topic_throwing, [](const message&) { throw std::runtime_error("the handler failed"); })
        && arm(
@@ -297,7 +297,7 @@ int main() {
         std::cout << "--- block the routing worker ---\n";
         const std::any marker { std::uint64_t { 0 } };
         const publish_status gated_status = bus.publish_async(topic_gate, marker);
-        bus_log(direction::publish_async, topic_gate, marker);
+        bus_log(direction::PUBLISH_ASYNC, topic_gate, marker);
         ++async_published;
         if (gated_status != publish_status::ACCEPTED) {
             std::cerr << "  the bus refused the message\n";
@@ -311,7 +311,7 @@ int main() {
         for (const std::uint64_t reading : backlog) {
             const std::any payload { reading };
             const publish_status outcome = bus.publish_async(topic_readings, payload);
-            bus_log(direction::publish_async, topic_readings, payload);
+            bus_log(direction::PUBLISH_ASYNC, topic_readings, payload);
             ++async_published;
             if (outcome != publish_status::ACCEPTED) {
                 std::cerr << "  the bus refused " << reading << '\n';
@@ -323,7 +323,7 @@ int main() {
 
         std::cout << "--- a sync publish cuts in front of it ---\n";
         const std::any cutting { cutting_in };
-        bus_log(direction::publish_sync, topic_readings, cutting);
+        bus_log(direction::PUBLISH_SYNC, topic_readings, cutting);
         bus.publish_sync(topic_readings, cutting);
         ++sync_published;
         const std::vector<std::uint64_t> parked = reader.order();
@@ -366,7 +366,7 @@ int main() {
     std::size_t expected_routed = 0;
     const std::size_t routed_before_failures = bus.routed();
     try {
-        bus_log(direction::publish_sync, topic_throwing, failing);
+        bus_log(direction::PUBLISH_SYNC, topic_throwing, failing);
         bus.publish_sync(topic_throwing, failing);
     }
     catch (const std::runtime_error& failure) {
@@ -380,7 +380,7 @@ int main() {
     // role built at the top. That sink is the channel for a failure with no caller left, and this is
     // the only publish here that reaches it.
     const publish_status throwing_status = bus.publish_async(topic_throwing, failing);
-    bus_log(direction::publish_async, topic_throwing, failing);
+    bus_log(direction::PUBLISH_ASYNC, topic_throwing, failing);
     ++async_published;
     if (throwing_status != publish_status::ACCEPTED) {
         std::cerr << "  the bus refused the message\n";
@@ -391,13 +391,13 @@ int main() {
     // `router::deliver` calls it and returns null, so nothing propagates to a publisher, the bus's
     // sink is not reached either, and the message counts as routed like any other.
     for (const std::string_view topic : { std::string_view { topic_caught } }) {
-        bus_log(direction::publish_sync, topic, failing);
+        bus_log(direction::PUBLISH_SYNC, topic, failing);
         bus.publish_sync(topic, failing);
         ++sync_published;
         ++expected_routed;
     }
     const publish_status caught_status = bus.publish_async(topic_caught, failing);
-    bus_log(direction::publish_async, topic_caught, failing);
+    bus_log(direction::PUBLISH_ASYNC, topic_caught, failing);
     ++async_published;
     ++expected_routed;
     if (caught_status != publish_status::ACCEPTED) {

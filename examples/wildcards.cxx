@@ -123,7 +123,7 @@ int main() {
     for (const auto& [subscriber, pattern] : armed) {
         auto id = bus.subscribe(pattern, [subscriber](const message& msg) {
             subscriber->topics_.emplace_back(msg.topic_);
-            bus_log(direction::subscribe, msg.topic_, msg.payload_, subscriber->name_);
+            bus_log(direction::SUBSCRIBE, msg.topic_, msg.payload_, subscriber->name_);
         });
         if (!id) {
             std::cerr << pattern << " is not a valid pattern: " << to_string(id.error().code_) << '\n';
@@ -150,7 +150,7 @@ int main() {
     std::cout << "--- publishes ---\n";
     for (std::size_t i = 0; i < 3; ++i) {
         const std::any payload { readings[i] };
-        bus_log(direction::publish_sync, topics[i], payload);
+        bus_log(direction::PUBLISH_SYNC, topics[i], payload);
         bus.publish_sync(topics[i], payload);
         std::cout << '\n';
     }

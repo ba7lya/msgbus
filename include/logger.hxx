@@ -61,14 +61,14 @@ namespace ba7lya::msgbus {
 
 /// @brief The direction the event in a log line travelled, at the granularity a trace needs.
 /// @details Publish is split in two because the two publish entry points differ in exactly the way a
-/// trace exists to show: which thread did the routing. `publish_sync` routes on the caller's thread,
-/// so its deliveries carry the caller's id; `publish_async` hands the message to the routing worker,
+/// trace exists to show: which thread did the routing. `PUBLISH_SYNC` routes on the caller's thread,
+/// so its deliveries carry the caller's id; `PUBLISH_ASYNC` hands the message to the routing worker,
 /// so its deliveries carry the worker's. Reading the tag and the thread together answers "why is this
 /// handler on another thread" without a trip to the source.
 enum class direction {
-    publish_sync,  ///< A message entering the bus on the publishing thread.
-    publish_async, ///< A message handed to the routing worker.
-    subscribe,     ///< A message reaching one subscriber's handler.
+    PUBLISH_SYNC,  ///< A message entering the bus on the publishing thread.
+    PUBLISH_ASYNC, ///< A message handed to the routing worker.
+    SUBSCRIBE,     ///< A message reaching one subscriber's handler.
 };
 
 /// @brief What the logger should do at run time: print, or stay quiet.
@@ -149,9 +149,9 @@ inline void bus_log(direction way, std::string_view topic, const std::any& paylo
 
     std::string_view tag = "SUB";
     switch (way) {
-    case direction::publish_sync:  tag = "PUB(sync)"; break;
-    case direction::publish_async: tag = "PUB(async)"; break;
-    case direction::subscribe:     tag = "SUB"; break;
+    case direction::PUBLISH_SYNC:  tag = "PUB(sync)"; break;
+    case direction::PUBLISH_ASYNC: tag = "PUB(async)"; break;
+    case direction::SUBSCRIBE:     tag = "SUB"; break;
     }
     logger.info("{:<10} {}  {}", tag, topic, tail);
 }

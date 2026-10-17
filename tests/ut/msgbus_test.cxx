@@ -747,7 +747,7 @@ TEST(msgbus_test, publish_async_under_block_never_rejects_a_full_queue) {
     g.open();
     publisher.join();
 
-    EXPECT_EQ(result.load(), publish_status::ACCEPTED) << "a full queue makes BLOCK wait, not refuse";
+    EXPECT_EQ(result.load(), publish_status::ACCEPTED) << "a full queue makes block wait, not refuse";
     EXPECT_TRUE(bus.flush());
     EXPECT_EQ(ran.load(), 3);
     EXPECT_EQ(bus.dropped(), 0u);
@@ -1253,7 +1253,7 @@ TEST(msgbus_test, release_routes_every_message_accepted_before_it) {
 
     bus.release();
 
-    EXPECT_EQ(received.count(), 32u) << "an ACCEPTED publish was a promise; release must keep it";
+    EXPECT_EQ(received.count(), 32u) << "an accepted publish was a promise; release must keep it";
     EXPECT_EQ(bus.routed(), 32u);
 }
 
@@ -1387,7 +1387,7 @@ TEST(msgbus_test, a_publisher_racing_a_subscription_never_sees_a_half_registered
 }
 
 TEST(msgbus_test, a_publisher_racing_release_is_either_accepted_or_rejected) {
-    // Real threads: no asynchronous publish may be lost — an ACCEPTED one must be routed, since release
+    // Real threads: no asynchronous publish may be lost — an accepted one must be routed, since release
     // drains before it returns.
     msgbus bus;
     registrations armed;

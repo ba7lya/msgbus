@@ -51,7 +51,7 @@ struct tally {
 /// executor, so every `SUB` line carries the id of the `PUB` line above it.
 void report(tally& subscriber, const ba7lya::msgbus::message& msg) {
     subscriber.topics_.emplace_back(msg.topic_);
-    bus_log(direction::subscribe, msg.topic_, msg.payload_, subscriber.name_);
+    bus_log(direction::SUBSCRIBE, msg.topic_, msg.payload_, subscriber.name_);
 }
 
 } // namespace
@@ -103,7 +103,7 @@ int main() {
     // is routed -- a command being acknowledged, a test, a shutdown path.
     std::cout << "--- publish_sync, one reading ---\n";
     const std::any first { std::uint64_t { 23175 } };
-    bus_log(direction::publish_sync, "site/line1/device7/sensor/temperature", first);
+    bus_log(direction::PUBLISH_SYNC, "site/line1/device7/sensor/temperature", first);
     bus.publish_sync("site/line1/device7/sensor/temperature", first);
     std::cout << '\n';
 
@@ -125,7 +125,7 @@ int main() {
     for (const std::uint64_t reading : { 23176U, 23177U }) {
         const std::any payload { reading };
         const publish_status outcome = bus.publish_async("site/line1/device7/sensor/temperature", payload);
-        bus_log(direction::publish_async, "site/line1/device7/sensor/temperature", payload);
+        bus_log(direction::PUBLISH_ASYNC, "site/line1/device7/sensor/temperature", payload);
         if (outcome != publish_status::ACCEPTED) {
             std::cerr << "the bus refused the message\n";
             return 1;

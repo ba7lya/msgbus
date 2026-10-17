@@ -56,7 +56,7 @@ public:
     /// @param pattern a literal topic path; a wildcard is rejected rather than interpreted
     /// @param id the subscription to register; the caller issues the id
     /// @return `id`, or why the pattern was rejected; nothing is registered on failure
-    /// @note Adding a pattern the same `id` already holds is `duplicate_pattern`.
+    /// @note Adding a pattern the same `id` already holds is `DUPLICATE_PATTERN`.
     [[nodiscard]]
     result<subscription_id, error> add(std::string_view pattern, subscription_id id) override {
         // The topic grammar, not the pattern grammar: this matcher has no wildcards, so `+` and `#` are
@@ -67,7 +67,7 @@ public:
     }
 
     /// @brief Registers `id` under an already-parsed `path`.
-    /// @return `id`, or `duplicate_pattern` when this `id` already holds `path`
+    /// @return `id`, or `DUPLICATE_PATTERN` when this `id` already holds `path`
     [[nodiscard]]
     result<subscription_id, error> add(const topic_path& path, subscription_id id) {
         if (!path.all_literal()) { return std::unexpected(error::make(error_code::INVALID_WILDCARD, path.spell())); }

@@ -178,7 +178,7 @@ TEST(executor_test, a_policy_is_ignored_while_the_queue_has_room) {
     EXPECT_EQ(exec.stats().rejected_, 0u);
 }
 
-// --- back pressure: REJECT (DROP_NEW) under a full queue -----------------------------------------------
+// --- back pressure: REJECT (`DROP_NEW`) under a full queue -----------------------------------------------
 
 TEST(executor_test, a_reject_policy_refuses_when_full_and_drops_nothing) {
     // Real threads: the gated worker holds the only slot's counterpart, so the queue stays full.
@@ -200,7 +200,7 @@ TEST(executor_test, a_reject_policy_refuses_when_full_and_drops_nothing) {
     EXPECT_TRUE(exec.drain());
 }
 
-// --- back pressure: DROP_OLDEST under a full queue -----------------------------------------------------
+// --- back pressure: `DROP_OLDEST` under a full queue -----------------------------------------------------
 
 TEST(executor_test, a_drop_oldest_evicts_the_longest_waiting_item) {
     // Real threads: the gated worker keeps the queue full so an eviction is forced.
@@ -246,12 +246,12 @@ TEST(executor_test, drop_oldest_at_capacity_one_keeps_only_the_newest) {
     EXPECT_EQ(exec.stats().completed_, 2u) << "the gated item and the survivor";
 }
 
-// --- back pressure: BLOCK under a full queue -----------------------------------------------------------
+// --- back pressure: `BLOCK` under a full queue -----------------------------------------------------------
 
 TEST(executor_test, a_block_submit_waits_for_room_rather_than_rejecting) {
-    // Real threads: the worker is gated and the queue is full, so a BLOCK submit cannot be accepted
+    // Real threads: the worker is gated and the queue is full, so a `BLOCK` submit cannot be accepted
     // until the gate opens and the worker frees a slot. Parking itself is not observable through the
-    // public API; the ACCEPTED return under a full queue is the evidence that it did not reject.
+    // public API; the accepted return under a full queue is the evidence that it did not reject.
     executor exec(1);
     gate g;
 
@@ -276,7 +276,7 @@ TEST(executor_test, a_block_submit_waits_for_room_rather_than_rejecting) {
 }
 
 TEST(executor_test, a_block_submit_is_released_by_release_returning_closed) {
-    // Real threads: the worker is gated and the queue is full, so the BLOCK submitter waits. The
+    // Real threads: the worker is gated and the queue is full, so the `BLOCK` submitter waits. The
     // blocker opens the gate once its submit returns, which is what lets release()'s join complete.
     executor exec(1);
     gate g;
@@ -367,7 +367,7 @@ TEST(executor_test, a_reentrant_submit_is_never_queued) {
 }
 
 TEST(executor_test, a_reentrant_submit_does_not_deadlock_under_block) {
-    // Real threads: the queue is full when the worker submits to itself under BLOCK — the exact case
+    // Real threads: the queue is full when the worker submits to itself under `BLOCK` — the exact case
     // that would self-deadlock if the submit queued instead of running inline.
     executor exec(1);
     gate g;

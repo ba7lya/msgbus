@@ -60,7 +60,7 @@ public:
     /// @param pattern a topic pattern, with `+` matching one level and `#` matching the rest
     /// @param id the subscription to register; the caller issues the id
     /// @return `id`, or why the pattern was rejected; nothing is registered on failure
-    /// @note Adding a pattern the same `id` already holds is `duplicate_pattern`, not a second registration.
+    /// @note Adding a pattern the same `id` already holds is `DUPLICATE_PATTERN`, not a second registration.
     [[nodiscard]]
     result<subscription_id, error> add(std::string_view pattern, subscription_id id) override {
         const auto parsed = parse_pattern(pattern);
@@ -69,7 +69,7 @@ public:
     }
 
     /// @brief Registers `id` under an already-parsed `path`.
-    /// @return `id`, or `duplicate_pattern` when this `id` already holds `path`
+    /// @return `id`, or `DUPLICATE_PATTERN` when this `id` already holds `path`
     [[nodiscard]]
     result<subscription_id, error> add(const topic_path& path, subscription_id id) {
         const auto held = by_subscription_.find(id);

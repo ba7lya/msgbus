@@ -27,7 +27,7 @@ namespace ba7lya::msgbus {
 namespace {
 
 ///
-/// @brief A level vocabulary the library itself never sees: `literal`/`+`/`#` and nothing else.
+/// @brief A level vocabulary the library itself never sees: `LITERAL`/`+`/`#` and nothing else.
 /// @details The tree is supposed to know only this much about its keys, so the test drives it through a
 /// vocabulary that is not a topic pattern at all. If a topic notion leaks into the tree, this stops
 /// compiling.
