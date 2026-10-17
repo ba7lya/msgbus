@@ -132,7 +132,7 @@ public:
     explicit executor(std::size_t capacity = UNBOUNDED, exception_sink on_exception = {})
         : capacity_(capacity)
         , on_exception_(std::move(on_exception))
-        , worker_([this](std::stop_token stop) { run(stop); }) {}
+        , worker_([this] { run(); }) {}
 
     executor(const executor&) = delete;
     executor& operator=(const executor&) = delete;
@@ -317,7 +317,6 @@ public:
             const std::unique_lock lock(mutex_);
             accepting_ = false;
         }
-        worker_.request_stop();
         not_empty_.notify_all();
         not_full_.notify_all();
         idle_.notify_all();
@@ -446,7 +445,7 @@ private:
     }
 
     /// @brief The worker body. Never throws.
-    void run(std::stop_token stop) noexcept {
+    void run() noexcept {
         {
             const std::unique_lock lock(mutex_);
             worker_id_ = std::this_thread::get_id();
@@ -456,9 +455,11 @@ private:
             work_item item;
             {
                 std::unique_lock lock(mutex_);
-                // Wake on a new item or on a stop request. close() clears accepting_ and requests stop,
-                // so a worker parked here is released even with an empty queue.
-                not_empty_.wait(lock, [this, &stop] { return !queue_.empty() || stop.stop_requested(); });
+                // Wake on a new item or on close(). `close()` clears `accepting_` and notifies this
+                // condition variable, so a worker parked here is released even with an empty queue.
+                // The shutdown flag is read under the same mutex every other decision uses rather
+                // than through a `std::stop_token`: one source of truth, and no second wake-up path.
+                not_empty_.wait(lock, [this] { return !queue_.empty() || !accepting_; });
 
                 if (queue_.empty()) {
                     // Stopping with nothing left to run: this is the exit, and every item accepted
