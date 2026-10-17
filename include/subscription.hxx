@@ -10,11 +10,21 @@
 
 #pragma once
 
+#include <cstdint>
+#include <unordered_set>
 #include <utility>
 
-#include "common.hxx"
-
 namespace ba7lya::msgbus {
+
+///
+/// @brief Identifies one subscription for its whole lifetime. Never reused, so a stale id can only
+/// fail to match rather than silently cancel a newer subscription.
+///
+using subscription_id = std::uint64_t;
+
+/// @brief The id set a trie node holds. A set rather than a list, so a subscriber registered under two
+/// patterns that both match one topic is still reached once.
+using subscription_set = std::unordered_set<subscription_id>;
 
 ///
 /// @brief What a subscription handle needs of whoever issued it: cancelling one subscription by id.

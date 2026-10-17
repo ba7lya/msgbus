@@ -38,10 +38,13 @@ namespace {
 
 using namespace ba7lya::msgbus;
 
+/// @brief The one topic every publish below names, so the shape is stated once.
+constexpr topic topic_reading = "site/line1/device7/sensor/temperature";
+
 /// @brief Everything one subscriber saw, so the example can print it at the end.
 struct tally {
     std::string name_;
-    std::vector<std::string> topics_;
+    std::vector<topic> topics_;
 };
 
 /// @brief Records one delivery and logs it, on whichever thread ran the handler.
@@ -103,8 +106,8 @@ int main() {
     // is routed -- a command being acknowledged, a test, a shutdown path.
     std::cout << "--- publish_sync, one reading ---\n";
     const std::any first { std::uint64_t { 23175 } };
-    bus_log(direction::PUBLISH_SYNC, "site/line1/device7/sensor/temperature", first);
-    bus.publish_sync("site/line1/device7/sensor/temperature", first);
+    bus_log(direction::PUBLISH_SYNC, topic_reading, first);
+    bus.publish_sync(topic_reading, first);
     std::cout << '\n';
 
     // --- an asynchronous publish ------------------------------------------
@@ -124,8 +127,8 @@ int main() {
     std::cout << "--- publish_async, two more readings ---\n";
     for (const std::uint64_t reading : { 23176U, 23177U }) {
         const std::any payload { reading };
-        const publish_status outcome = bus.publish_async("site/line1/device7/sensor/temperature", payload);
-        bus_log(direction::PUBLISH_ASYNC, "site/line1/device7/sensor/temperature", payload);
+        const publish_status outcome = bus.publish_async(topic_reading, payload);
+        bus_log(direction::PUBLISH_ASYNC, topic_reading, payload);
         if (outcome != publish_status::ACCEPTED) {
             std::cerr << "the bus refused the message\n";
             return 1;
@@ -157,7 +160,7 @@ int main() {
     // itself must not be the thing that decides.
     std::cout << "\n--- logging off ---\n";
     configure_logging(log_config { .enabled_ = false });
-    bus.publish_sync("site/line1/device7/sensor/temperature", std::any { std::uint64_t { 23178 } });
+    bus.publish_sync(topic_reading, std::any { std::uint64_t { 23178 } });
     std::cout << "  logging_enabled() is " << std::boolalpha << logging_enabled()
               << ", and the publish above printed nothing\n";
     std::cout << "  line-reader saw " << line_reader.topics_.size() << ", site-alarm saw " << site_alarm.topics_.size()

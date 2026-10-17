@@ -170,23 +170,23 @@ void expect_resolved(const router& bus, std::string_view topic, std::initializer
     EXPECT_EQ(resolved_ids(bus, topic), wanted) << "on " << topic;
 }
 
-/// @brief Resolves and delivers `topic`, as a synchronous publisher would.
+/// @brief Resolves and delivers `name`, as a synchronous publisher would.
 /// @return what `deliver_all` returned: the first unhandled exception, or null
 [[nodiscard]]
-std::exception_ptr publish(const router& bus, std::string_view topic) {
-    const auto parsed = parse_topic(topic);
+std::exception_ptr publish(const router& bus, topic name) {
+    const auto parsed = parse_topic(name);
     if (!parsed) {
-        ADD_FAILURE() << "expected " << topic << " to be a topic";
+        ADD_FAILURE() << "expected " << name << " to be a topic";
         return nullptr;
     }
     const std::vector<delivery> routes = bus.resolve(parsed.value().levels());
-    return router::deliver_all(routes, message { topic_name(topic), {}, {} });
+    return router::deliver_all(routes, message { std::move(name), {}, {} });
 }
 
 /// @brief A message-carrier for the cases that assert on the payload the handler saw.
 [[nodiscard]]
-message make_message(std::string_view topic, std::string_view payload) {
-    return message { topic_name(topic), std::string(payload), {} };
+message make_message(topic name, std::string_view payload) {
+    return message { std::move(name), std::string(payload), {} };
 }
 
 // --- registration and ids --------------------------------------------------------------------------

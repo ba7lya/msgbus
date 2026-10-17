@@ -47,7 +47,7 @@ namespace {
 /// Spelled once, because the failure mode this guards against is a benchmark that quietly stops
 /// matching: change the pattern in one place and leave the topic behind, and the resolve returns an
 /// empty snapshot while the number still looks plausible.
-constexpr std::string_view k_device_topic = "site/line1/device7/sensor/telemetry";
+constexpr topic k_device_topic = "site/line1/device7/sensor/telemetry";
 
 /// @brief A payload the handlers may look at, so the delivery cannot be optimised away.
 ///
@@ -351,6 +351,8 @@ static void bm_wide_table(::benchmark::State& state) {
     msgbus bus;
     const auto count = static_cast<std::size_t>(state.range(0));
 
+    // Holding the strings, not `topic` values: each name below is built from an integer, so a vector
+    // of views would keep only the address of text that dies at the end of its iteration.
     std::vector<std::string> topics;
     topics.reserve(count);
     std::vector<subscription> armed;

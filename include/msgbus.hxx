@@ -28,11 +28,15 @@
 #include "dispatcher.hxx"
 #include "error.hxx"
 #include "executor.hxx"
+#include "handler.hxx"
 #include "layer_matcher.hxx"
 #include "matcher.hxx"
+#include "message.hxx"
 #include "msgbus_base.hxx"
 #include "prefix_matcher.hxx"
 #include "router.hxx"
+#include "subscription.hxx"
+#include "topic.hxx"
 
 namespace ba7lya::msgbus {
 
@@ -177,8 +181,8 @@ public:
     /// @details Re-declared here because a class that overrides `publish_sync(message)` hides the base's
     /// convenience overload; without this a caller holding a `msgbus` — rather than a `msgbus_base&` —
     /// could only build the `message` itself. Same for `publish_async` below.
-    void publish_sync(std::string_view topic, std::any payload) {
-        msgbus_base::publish_sync(topic, std::move(payload));
+    void publish_sync(topic topic, std::any payload) {
+        msgbus_base::publish_sync(std::move(topic), std::move(payload));
     }
 
     /// @brief Queues `msg` for the routing worker.
@@ -206,8 +210,8 @@ public:
     }
 
     [[nodiscard]]
-    publish_status publish_async(std::string_view topic, std::any payload) {
-        return msgbus_base::publish_async(topic, std::move(payload));
+    publish_status publish_async(topic topic, std::any payload) {
+        return msgbus_base::publish_async(std::move(topic), std::move(payload));
     }
 
     /// @brief Convenience: waits without limit for the routing queue to drain.

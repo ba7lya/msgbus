@@ -26,16 +26,11 @@
 
 #include "common.hxx"
 #include "executor.hxx"
+#include "handler.hxx"
+#include "message.hxx"
 #include "router.hxx"
 
 namespace ba7lya::msgbus {
-
-///
-/// @brief The id a subscriber names to say where its handler runs.
-/// @details `0` is reserved for "the caller's own thread"; it is the value `dispatch_options` defaults
-/// to, and `dispatcher::add` refuses it, so a registration can never shadow the inline path.
-///
-using executor_id = std::uint64_t;
 
 ///
 /// @brief Owns the executors a subscriber may name, and fans a resolved snapshot out over them.

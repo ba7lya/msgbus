@@ -69,7 +69,7 @@ package "ba7lya::msgbus — the bus" {
   }
 
   class message {
-    +topic_ : topic_name
+    +topic_ : std::string
     +payload_ : any
     +meta_ : message_meta
   }

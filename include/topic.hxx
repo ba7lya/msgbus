@@ -17,18 +17,25 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
-#include "common.hxx"
 #include "error.hxx"
 #include "trie.hxx"
 
 namespace ba7lya::msgbus {
 
 ///
-/// @brief One level of a topic or of a pattern: the text it stands for, and which of the three roles it
-/// plays.
+/// @brief A topic, as in `device/room1/temp`: the concrete text a publisher names.
+/// @details Borrowed, because naming a topic is not owning it. An entry point takes the alias by value
+/// and the `message` it builds keeps its own copy, so the caller may name a topic with a literal, a
+/// `std::string`, or a view of either, and the text need only outlive the call — a queued message in
+/// particular is routed on the worker thread after its publisher has returned and owns its own text.
+/// Everything that reads a topic — parsing, matching, logging — takes the alias too.
+///
+using topic = std::string_view;
+
+///
+/// @brief One level of a topic or of a pattern: the text it stands for, and which of the three roles it plays.
 /// @details A literal level stands for itself; `+` stands for any one level; `#` stands for the remaining
 /// levels and only ever ends a pattern. This is the vocabulary the trie is indexed by, which is all the trie
 /// needs to know — nothing here tells it what a topic is.
@@ -86,8 +93,8 @@ struct topic_level {
 
 ///
 /// @brief A topic or a pattern, as the list of levels it was split into.
-/// @details Owning, because a pattern outlives the text it was parsed from: a subscription keeps its
-/// pattern for as long as it is registered. This is the key the trie is indexed by.
+/// @details Owning, because a pattern outlives the text it was parsed from: a subscription keeps its pattern for as
+/// long as it is registered. This is the key the trie is indexed by.
 ///
 struct topic_path {
     std::vector<topic_level> levels_;

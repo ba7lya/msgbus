@@ -11,14 +11,24 @@
 
 #pragma once
 
-#include <expected>
 #include <span>
 #include <string_view>
 
-#include "common.hxx"
 #include "error.hxx"
+#include "subscription.hxx"
 
 namespace ba7lya::msgbus {
+
+///
+/// @brief The pattern language a bus resolves subscriptions with.
+/// @details Chosen when the bus is constructed, because the two disagree on what a subscription means:
+/// under `LAYER` a pattern is matched level by level and `+` / `#` are grammar, while under `PREFIX` a
+/// pattern is a literal path and everything beneath it belongs to the subscription.
+///
+enum class matcher_type {
+    LAYER,  ///< `layer_matcher`: level-by-level matching with `+` and `#` wildcards.
+    PREFIX, ///< `prefix_matcher`: no wildcards; a subscription hears its path and everything below it.
+};
 
 ///
 /// @brief What a pattern index has to provide: register an id under a pattern, drop it again, and

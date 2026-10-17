@@ -14,6 +14,7 @@
 #include <concepts>
 #include <cstddef>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>

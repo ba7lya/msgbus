@@ -69,10 +69,10 @@ using namespace ba7lya::msgbus;
 /// Overlap would be legal and useless: `resolve` returns one delivery per matching subscription, so a
 /// reading reachable by two readers would make every count below a question about the matcher rather
 /// than about the entry points. Four topics, four subscriptions, one delivery each.
-constexpr auto topic_readings = "demo/readings";
-constexpr auto topic_gate = "demo/gate";
-constexpr auto topic_throwing = "demo/throwing";
-constexpr auto topic_caught = "demo/caught";
+constexpr topic topic_readings = "demo/readings";
+constexpr topic topic_gate = "demo/gate";
+constexpr topic topic_throwing = "demo/throwing";
+constexpr topic topic_caught = "demo/caught";
 
 /// @brief The asynchronous backlog, queued behind the gated message and routed in this order.
 constexpr std::uint64_t backlog[] { 100U, 101U, 102U };
@@ -390,9 +390,9 @@ int main() {
     // A subscriber that supplies its own `error_handler` keeps the failure to itself on either path:
     // `router::deliver` calls it and returns null, so nothing propagates to a publisher, the bus's
     // sink is not reached either, and the message counts as routed like any other.
-    for (const std::string_view topic : { std::string_view { topic_caught } }) {
-        bus_log(direction::PUBLISH_SYNC, topic, failing);
-        bus.publish_sync(topic, failing);
+    for (const topic& name : { topic_caught }) {
+        bus_log(direction::PUBLISH_SYNC, name, failing);
+        bus.publish_sync(name, failing);
         ++sync_published;
         ++expected_routed;
     }

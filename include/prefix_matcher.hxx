@@ -16,15 +16,14 @@
 #include <cstddef>
 #include <expected>
 #include <span>
-#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "common.hxx"
 #include "error.hxx"
 #include "matcher.hxx"
+#include "subscription.hxx"
 #include "topic.hxx"
 #include "trie.hxx"
 

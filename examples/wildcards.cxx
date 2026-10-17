@@ -29,6 +29,9 @@
 #include "logger.hxx"
 #include "msgbus.hxx"
 #include "subscription.hxx"
+#include "topic.hxx"
+
+using namespace ba7lya::msgbus;
 
 namespace {
 
@@ -36,7 +39,7 @@ namespace {
 struct tally {
     std::string name_;
     std::string pattern_;
-    std::vector<std::string> topics_;
+    std::vector<topic> topics_;
 };
 
 /// @brief The three topics, chosen so each pattern's reach is visible.
@@ -46,15 +49,15 @@ struct tally {
 /// `site/backup/device7/sensor/temperature` differs from the first in one level, which is enough to
 /// cut off every pattern that spells `line1`.
 ///
-constexpr auto topic_deep = "site/line1/device7/sensor/temperature";
-constexpr auto topic_shallow = "site/line1/device7";
-constexpr auto topic_other = "site/backup/device7/sensor/temperature";
+constexpr topic topic_deep = "site/line1/device7/sensor/temperature";
+constexpr topic topic_shallow = "site/line1/device7";
+constexpr topic topic_other = "site/backup/device7/sensor/temperature";
 
 /// @brief Everything the three publishes carry, cycled so a line names which publish it belongs to.
 constexpr std::uint64_t readings[] { 23175, 23176, 23177 };
 
 /// @brief The three topics, in the order every loop below walks them.
-constexpr std::string_view topics[] { topic_deep, topic_shallow, topic_other };
+constexpr topic topics[] { topic_deep, topic_shallow, topic_other };
 
 /// @brief How many of the three topics a pattern matches, measured on a bus of its own.
 ///
@@ -68,7 +71,7 @@ std::size_t count_reach(ba7lya::msgbus::msgbus& bus, std::string_view pattern) {
     std::size_t seen = 0;
     auto id = bus.subscribe(pattern, [&seen](const ba7lya::msgbus::message&) { ++seen; });
     if (!id) { return 0; }
-    for (const std::string_view topic : topics) { bus.publish_sync(topic, std::any { readings[0] }); }
+    for (const auto& name : topics) { bus.publish_sync(name, std::any { readings[0] }); }
     // Cancelled through the handle, which is the whole point of the handle: the probe bus is reused
     // for every pattern below, and a registration left behind would answer the next question too.
     static_cast<void>(id->cancel());
@@ -166,10 +169,10 @@ int main() {
     std::size_t total = 0;
     for (const auto& [subscriber, pattern] : armed) {
         std::cout << "  " << subscriber->pattern_ << '\n';
-        for (const std::string_view topic : { topic_deep, topic_shallow, topic_other }) {
+        for (const topic& name : topics) {
             const bool heard
-                = std::find(subscriber->topics_.begin(), subscriber->topics_.end(), topic) != subscriber->topics_.end();
-            std::cout << "    " << (heard ? "hit " : "  - ") << "  " << topic << '\n';
+                = std::find(subscriber->topics_.begin(), subscriber->topics_.end(), name) != subscriber->topics_.end();
+            std::cout << "    " << (heard ? "hit " : "  - ") << "  " << name << '\n';
         }
         std::cout << "    " << subscriber->topics_.size() << " deliveries\n";
         total += subscriber->topics_.size();

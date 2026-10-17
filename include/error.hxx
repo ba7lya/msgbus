@@ -11,10 +11,27 @@
 #pragma once
 
 #include <cstddef>
+#include <expected>
 #include <string>
 #include <string_view>
 
 namespace ba7lya::msgbus {
+
+///
+/// @brief Either a value of `T` or an error of `E`.
+/// @details Pattern parsing and trie lookups fail in ways the caller is expected to handle, so they
+/// report by value instead of throwing; exceptions stay reserved for genuine programming errors —
+/// an empty handler, an out-of-range access. No `void` specialisation is needed: the standard
+/// `std::expected<void, E>` already means "succeeded, carrying nothing".
+///
+/// A bare alias, with no wrapper: the member names (`has_value`, `value`, `error`, `value_or`,
+/// `operator bool`) and the conversion from `std::unexpected` are the standard ones. Reading the
+/// branch that is not held throws `std::bad_expected_access<E>`.
+/// @tparam T the value produced on success
+/// @tparam E the error produced on failure
+///
+template<typename T, typename E>
+using result = std::expected<T, E>;
 
 ///
 /// @brief How a topic went wrong. Every failure the core reports is one of these.

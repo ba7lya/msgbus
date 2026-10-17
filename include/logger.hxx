@@ -59,19 +59,23 @@
 
 namespace ba7lya::msgbus {
 
+///
 /// @brief The direction the event in a log line travelled, at the granularity a trace needs.
 /// @details Publish is split in two because the two publish entry points differ in exactly the way a
 /// trace exists to show: which thread did the routing. `PUBLISH_SYNC` routes on the caller's thread,
 /// so its deliveries carry the caller's id; `PUBLISH_ASYNC` hands the message to the routing worker,
 /// so its deliveries carry the worker's. Reading the tag and the thread together answers "why is this
 /// handler on another thread" without a trip to the source.
+///
 enum class direction {
     PUBLISH_SYNC,  ///< A message entering the bus on the publishing thread.
     PUBLISH_ASYNC, ///< A message handed to the routing worker.
     SUBSCRIBE,     ///< A message reaching one subscriber's handler.
 };
 
+///
 /// @brief What the logger should do at run time: print, or stay quiet.
+///
 struct log_config {
     bool enabled_ = true;                                   ///< `false` silences every line.
     spdlog::level::level_enum level_ = spdlog::level::info; ///< The level used while enabled.
@@ -79,11 +83,12 @@ struct log_config {
 
 #if BA7LYA_MSGBUS_LOG_ENABLED
 
-/// @brief A payload rendered as text, for the last field of the line.
 ///
-/// The bus is type-blind -- the payload is a `std::any` and nothing on the delivery path looks inside
+/// @brief A payload rendered as text, for the last field of the line.
+/// @details The bus is type-blind -- the payload is a `std::any` and nothing on the delivery path looks inside
 /// it -- so this is the one place that has to. A type it does not know prints its name instead of
 /// nothing, which keeps a wrong-type publish visible in the trace rather than silent.
+///
 [[nodiscard]]
 inline std::string payload_text(const std::any& payload) {
     if (const auto* number = std::any_cast<std::uint64_t>(&payload)) { return std::to_string(*number); }
@@ -94,12 +99,13 @@ inline std::string payload_text(const std::any& payload) {
     return std::string("<") + payload.type().name() + ">";
 }
 
-/// @brief The logger every line goes through, with the trace pattern installed on first use.
 ///
-/// `%Y-%m-%d %H:%M:%S.%e` is the local wall clock to the millisecond and `%t` the thread id; the rest
+/// @brief The logger every line goes through, with the trace pattern installed on first use.
+/// @details `%Y-%m-%d %H:%M:%S.%e` is the local wall clock to the millisecond and `%t` the thread id; the rest
 /// of the line is built by `bus_log`. The pattern is installed lazily rather than at namespace scope
 /// so a translation unit that includes this header without logging anything does not perturb spdlog's
 /// global state on the way in.
+///
 [[nodiscard]]
 inline spdlog::logger& bus_logger() {
     static const std::shared_ptr<spdlog::logger> instance = [] {
@@ -110,32 +116,35 @@ inline spdlog::logger& bus_logger() {
     return *instance;
 }
 
+///
 /// @brief Applies a logger configuration, which is how a caller turns the trace on or off.
+///
 inline void configure_logging(const log_config& config = {}) {
     bus_logger().set_level(config.enabled_ ? config.level_ : spdlog::level::off);
 }
 
+///
 /// @brief Whether a line would be printed -- the readable form of the level `configure_logging` set.
+///
 [[nodiscard]]
 inline bool logging_enabled() {
     return bus_logger().should_log(spdlog::level::info);
 }
 
-/// @brief Writes one event line.
 ///
-/// The timestamp is taken when the line is written, not read from `message::meta_`: `publish_sync(
+/// @brief Writes one event line.
+/// @details The timestamp is taken when the line is written, not read from `message::meta_`: `publish_sync(
 /// topic, payload)` and its asynchronous twin build the message with default provenance, so a stamp
 /// carried by the message would be the epoch. A gateway that cares about source time stamps its own
 /// messages before publishing them, and passes its own stamp in the payload.
-///
 /// The whole line goes through one `logger.info`, so the tag, the topic and the payload are formatted
 /// together and an interleaved trace cannot split them across threads.
-///
 /// @param way whether the message is being published, and how, or delivered
 /// @param topic the concrete topic; a delivery's own topic, never the pattern that matched it
 /// @param payload what the message carries
 /// @param note a trailing annotation: the subscriber's name on a delivery. Publish lines have none --
 /// the direction already says sync or async, and repeating it here would be two places to get wrong.
+///
 inline void bus_log(direction way, std::string_view topic, const std::any& payload, std::string_view note = {}) {
     spdlog::logger& logger = bus_logger();
     if (!logger.should_log(spdlog::level::info)) { return; }
@@ -163,18 +172,24 @@ inline void bus_log(direction way, std::string_view topic, const std::any& paylo
 // `payload_text` and `bus_logger` are absent rather than empty -- they exist only to reach spdlog, and
 // with the trace compiled out nothing may.
 
+///
 /// @brief The run-time switch of a build that has no run-time trace: accepted, and ignored.
+///
 inline void configure_logging(const log_config& = {}) {}
 
+///
 /// @brief `false`, always: this build prints no lines whatever `configure_logging` was handed.
+///
 [[nodiscard]]
 inline bool logging_enabled() {
     return false;
 }
 
+///
 /// @brief The trace call of a build that has no trace: accepted, and compiled away.
+///
 inline void bus_log(direction, std::string_view, const std::any&, std::string_view = {}) {}
 
-#endif
+#endif // BA7LYA_MSGBUS_LOG_ENABLED
 
 } // namespace ba7lya::msgbus

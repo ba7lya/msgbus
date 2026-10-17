@@ -1,7 +1,8 @@
 ///
 /// @file common.hxx
 /// @author BA7LYA (1042140025@qq.com)
-/// @brief The value types that cross the bus API: topics, messages, handlers and the policies they carry.
+/// @brief The small value types several layers name and none owns: the publish outcome, the executor
+/// id, and what a subscriber asks of its executor.
 /// @version 0.1
 /// @date 2026-10-15
 /// @copyright Copyright (c) 2026 BA7LYA
@@ -10,92 +11,9 @@
 
 #pragma once
 
-#include <any>
-#include <chrono>
 #include <cstdint>
-#include <exception>
-#include <expected>
-#include <functional>
-#include <string>
-#include <unordered_set>
 
 namespace ba7lya::msgbus {
-
-///
-/// @brief Either a value of `T` or an error of `E`.
-/// @details Pattern parsing and trie lookups fail in ways the caller is expected to handle, so they
-/// report by value instead of throwing; exceptions stay reserved for genuine programming errors —
-/// an empty handler, an out-of-range access. No `void` specialisation is needed: the standard
-/// `std::expected<void, E>` already means "succeeded, carrying nothing".
-///
-/// A bare alias, with no wrapper: the member names (`has_value`, `value`, `error`, `value_or`,
-/// `operator bool`) and the conversion from `std::unexpected` are the standard ones. Reading the
-/// branch that is not held throws `std::bad_expected_access<E>`.
-/// @tparam T the value produced on success
-/// @tparam E the error produced on failure
-///
-template<typename T, typename E>
-using result = std::expected<T, E>;
-
-///
-/// @brief A concrete topic, as in `device/room1/temp`.
-/// @details Named `topic_name` rather than `topic` so the word stays available for the concept: a
-/// struct that names a member `topic_` and a type `topic` cannot declare `topic topic_;`.
-///
-using topic_name = std::string;
-
-///
-/// @brief Identifies one subscription for its whole lifetime. Never reused, so a stale id can only
-/// fail to match rather than silently cancel a newer subscription.
-///
-using subscription_id = std::uint64_t;
-
-/// @brief The id set a trie node holds. A set rather than a list, so a subscriber registered under two
-/// patterns that both match one topic is still reached once.
-using subscription_set = std::unordered_set<subscription_id>;
-
-///
-/// @brief Everything about a message except its topic and payload.
-/// @details Kept apart from the payload so a handler that only needs provenance — a logger, a router
-/// that re-publishes — does not have to look through the payload to find it.
-///
-struct message_meta {
-    /// @brief When the message was created, at the source.
-    std::chrono::system_clock::time_point stamp_;
-    /// @brief Which adapter or component produced it, for tracing.
-    std::string source_;
-    /// @brief Monotonic per-source sequence number.
-    std::uint64_t seq_ = 0;
-};
-
-///
-/// @brief The unit that flows over the bus: a topic, a payload, and its provenance.
-/// @details The payload is a `std::any`, so a publisher and a subscriber agree on a type without the
-/// bus knowing it. `std::any_cast` on the wrong type throws, which is why the type convention per
-/// topic belongs to the application, not to the bus.
-/// @note In-process only. `std::any` cannot cross a process boundary; a cross-process transport
-/// would need its own encoding rather than this type.
-///
-struct message {
-    topic_name topic_;
-    std::any payload_;
-    message_meta meta_;
-};
-
-///
-/// @brief What a subscriber registers: called once per delivered message.
-/// @details Handlers are invoked with exceptions isolated, so one throwing subscriber neither skips
-/// its siblings nor reaches the publisher.
-///
-using handler = std::function<void(const message&)>;
-
-///
-/// @brief Where a subscriber's exception goes when there is no caller left to throw it at.
-/// @details A synchronous publish can propagate a handler's exception to its caller; an asynchronous
-/// one has already returned by the time the handler runs, so the exception has nowhere to go and is
-/// handed here instead. Receives the message the failing handler was handling.
-///
-using error_handler = std::function<void(const message&, std::exception_ptr)>;
 
 ///
 /// @brief The outcome of an asynchronous publish.
@@ -105,6 +23,13 @@ enum class publish_status {
     ACCEPTED, ///< Queued; the worker will dispatch it.
     REJECTED, ///< Not queued, because the bus was closed or the queue was full under `DROP_NEW`.
 };
+
+///
+/// @brief The id a subscriber names to say where its handler runs.
+/// @details `0` is reserved for "the caller's own thread"; it is the value `dispatch_options` defaults
+/// to, and `dispatcher::add` refuses it, so a registration can never shadow the inline path.
+///
+using executor_id = std::uint64_t;
 
 ///
 /// @brief What to do when the queue is full.
@@ -118,26 +43,19 @@ enum class back_pressure {
 };
 
 ///
-/// @brief The pattern language a bus resolves subscriptions with.
-/// @details Chosen when the bus is constructed, because the two disagree on what a subscription means:
-/// under `LAYER` a pattern is matched level by level and `+` / `#` are grammar, while under `PREFIX` a
-/// pattern is a literal path and everything beneath it belongs to the subscription.
-///
-enum class matcher_type {
-    LAYER,  ///< `layer_matcher`: level-by-level matching with `+` and `#` wildcards.
-    PREFIX, ///< `prefix_matcher`: no wildcards; a subscription hears its path and everything below it.
-};
-
-///
 /// @brief How a subscriber wants its handlers run: on which executor, and what to do when that
 /// executor cannot keep up.
 /// @details Resolved once per subscription. The executor is the deciding factor for which thread a
 /// handler runs on, and therefore for what a handler may safely touch without a lock.
+/// @note A value type, declared apart from both the router and the executor on purpose: both name it,
+/// and neither may include the other — the router is tested with no worker at all, and the executor
+/// knows nothing of subscriptions. That is why it sits here, in the header every layer already
+/// includes, rather than in `dispatcher.hxx` where the fan-out that consumes it lives.
 ///
 struct dispatch_options {
-    /// @brief The id of the executor the handler should run on. `0` is `dispatcher::INLINE`: the
-    /// caller's own thread, with no executor involved and nothing queued.
-    std::uint64_t executor_ = 0;
+    /// @brief The id of the executor the handler should run on.
+    /// `0` is `dispatcher::INLINE`: the caller's own thread, with no executor involved and nothing queued.
+    executor_id executor_ = 0;
     /// @brief What to do when the executor's queue is full.
     back_pressure policy_ = back_pressure::DROP_OLDEST;
 };

@@ -17,7 +17,10 @@
 
 #include "common.hxx"
 #include "error.hxx"
+#include "handler.hxx"
+#include "message.hxx"
 #include "subscription.hxx"
+#include "topic.hxx"
 
 namespace ba7lya::msgbus {
 
@@ -67,8 +70,10 @@ public:
     virtual void publish_sync(message msg) = 0;
 
     /// @brief Convenience: a concrete topic and a payload, with default provenance.
-    void publish_sync(std::string_view topic, std::any payload) {
-        publish_sync(message { topic_name(topic), std::move(payload), {} });
+    /// @details The topic is taken by value and moved into the message, which owns it: the caller's
+    /// text may be a temporary, and a message outlives the call that built it.
+    void publish_sync(topic topic, std::any payload) {
+        publish_sync(message { std::move(topic), std::move(payload), {} });
     }
 
     /// @brief Queues `msg` for the worker thread to route.
@@ -81,8 +86,8 @@ public:
 
     /// @brief Convenience: a concrete topic and a payload, with default provenance.
     [[nodiscard]]
-    publish_status publish_async(std::string_view topic, std::any payload) {
-        return publish_async(message { topic_name(topic), std::move(payload), {} });
+    publish_status publish_async(topic topic, std::any payload) {
+        return publish_async(message { std::move(topic), std::move(payload), {} });
     }
 
     /// @brief Waits until every message accepted so far has been routed.

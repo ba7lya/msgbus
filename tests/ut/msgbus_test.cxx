@@ -34,8 +34,10 @@
 #include "executor.hxx"
 #include "msgbus.hxx"
 #include "msgbus_base.hxx"
+#include "pattern.hxx"
 #include "prefix_matcher.hxx"
 #include "subscription.hxx"
+#include "topic.hxx"
 
 namespace ba7lya::msgbus {
 
@@ -196,10 +198,10 @@ void sink(const auto&... unused) { static_cast<void>(sizeof...(unused)); }
 
 /// @brief A message carrying `topic` and an integer payload, for the cases that assert on provenance.
 [[nodiscard]]
-message make_message(std::string_view topic, int payload = 0, std::string source = {}, std::uint64_t seq = 0) {
+message make_message(topic name, int payload = 0, std::string source = {}, std::uint64_t seq = 0) {
     return message {
-        topic_name(topic), std::any { payload },
-          message_meta { {}, std::move(source), seq }
+        std::move(name), std::any { payload },
+          message_meta { {}, seq, std::move(source) }
     };
 }
 
@@ -234,8 +236,7 @@ public:
     /// @note The bus issues the id and the router stores it, so the value returned here is the same
     /// one `resolve` reports for this registration and the one `unsubscribe` takes.
     subscription_id add(
-        msgbus_base& bus, std::string_view pattern, handler callback, dispatch_options options = {},
-        error_handler on_error = {}
+        msgbus_base& bus, pattern pattern, handler callback, dispatch_options options = {}, error_handler on_error = {}
     ) {
         auto registered = bus.subscribe(pattern, std::move(callback), options, std::move(on_error));
         EXPECT_TRUE(registered.has_value()) << "on " << pattern;

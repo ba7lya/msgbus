@@ -201,7 +201,7 @@ TEST(subscription_test, a_handle_created_inside_a_delivery_outlives_it) {
 
     const auto parsed = parse_topic("a/b");
     ASSERT_TRUE(parsed.has_value());
-    static_cast<void>(router::deliver_all(bus.resolve(parsed->levels()), message { topic_name("a/b"), {}, {} }));
+    static_cast<void>(router::deliver_all(bus.resolve(parsed->levels()), message { std::string("a/b"), {}, {} }));
     ASSERT_TRUE(added_later.has_value()) << "the handler ran and registered";
 
     EXPECT_TRUE(added_later->cancel());
