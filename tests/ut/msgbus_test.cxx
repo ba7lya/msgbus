@@ -19,6 +19,7 @@
 #include <exception>
 #include <gtest/gtest.h>
 #include <initializer_list>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -33,6 +34,7 @@
 #include "executor.hxx"
 #include "msgbus.hxx"
 #include "msgbus_base.hxx"
+#include "prefix_matcher.hxx"
 #include "subscription.hxx"
 
 namespace ba7lya::msgbus {
@@ -331,6 +333,93 @@ TEST(msgbus_test, subscribe_reports_a_rejected_pattern_by_value) {
     EXPECT_TRUE(bus.empty());
 }
 
+// --- the pattern language -----------------------------------------------------------------------------
+
+TEST(msgbus_test, a_default_constructed_bus_is_ready_to_publish) {
+    msgbus bus;
+    registrations armed;
+    recorder received;
+    armed.add(bus, "a/b", received.callback());
+
+    bus.publish_sync("a/b", std::any { 1 });
+
+    EXPECT_TRUE(received.received_only("a/b")) << "a no-argument bus still runs and routes";
+    EXPECT_EQ(bus.routed(), 1u);
+}
+
+TEST(msgbus_test, a_default_bus_matches_level_by_level) {
+    msgbus bus;
+    registrations armed;
+    recorder received;
+    armed.add(bus, "site/line1", received.callback());
+
+    bus.publish_sync("site/line1/device7", std::any { 1 });
+
+    EXPECT_EQ(received.count(), 0u) << "under `LAYER` a pattern without `#` names one exact topic";
+}
+
+TEST(msgbus_test, a_prefix_bus_matches_everything_below_the_subscribed_path) {
+    msgbus bus(matcher_type::PREFIX);
+    registrations armed;
+    recorder received;
+    armed.add(bus, "site/line1", received.callback());
+
+    bus.publish_sync("site/line1/device7/temp", std::any { 1 });
+
+    EXPECT_TRUE(received.received_only("site/line1/device7/temp"));
+}
+
+TEST(msgbus_test, a_prefix_bus_does_not_match_a_sibling_or_a_parent) {
+    msgbus bus(matcher_type::PREFIX);
+    registrations armed;
+    recorder received;
+    armed.add(bus, "site/line1", received.callback());
+
+    bus.publish_sync("site/line2/device7", std::any { 1 });
+    bus.publish_sync("site", std::any { 2 });
+
+    EXPECT_EQ(received.count(), 0u);
+}
+
+TEST(msgbus_test, a_layer_bus_still_accepts_the_wildcard_grammar) {
+    msgbus bus(matcher_type::LAYER);
+    registrations armed;
+    recorder received;
+    armed.add(bus, "site/+/device7", received.callback());
+
+    bus.publish_sync("site/line1/device7", std::any { 1 });
+
+    EXPECT_TRUE(received.received_only("site/line1/device7"));
+}
+
+TEST(msgbus_test, a_prefix_bus_rejects_a_wildcard_pattern) {
+    msgbus bus(matcher_type::PREFIX);
+
+    const auto plus = bus.subscribe("site/+", [](const message&) {});
+    const auto hash = bus.subscribe("site/#", [](const message&) {});
+
+    ASSERT_FALSE(plus.has_value());
+    EXPECT_EQ(plus.error().code_, error_code::WILDCARD_IN_TOPIC);
+    ASSERT_FALSE(hash.has_value());
+    EXPECT_EQ(hash.error().code_, error_code::WILDCARD_IN_TOPIC);
+    EXPECT_TRUE(bus.empty());
+}
+
+TEST(msgbus_test, a_bus_can_be_built_over_a_matcher_the_caller_supplies) {
+    msgbus bus(std::make_unique<prefix_matcher>());
+    registrations armed;
+    recorder received;
+    armed.add(bus, "site", received.callback());
+
+    bus.publish_sync("site/line1/device7", std::any { 1 });
+
+    EXPECT_TRUE(received.received_only("site/line1/device7"));
+}
+
+TEST(msgbus_test, a_null_matcher_is_rejected) {
+    EXPECT_THROW(sink(msgbus(std::unique_ptr<matcher> {})), std::invalid_argument);
+}
+
 // --- synchronous publishing ---------------------------------------------------------------------------
 
 TEST(msgbus_test, publish_sync_runs_an_inline_handler_before_it_returns) {
@@ -566,7 +655,7 @@ TEST(msgbus_test, publish_async_carries_the_messages_provenance_to_the_handler) 
 
 TEST(msgbus_test, publish_async_rejects_when_the_routing_queue_is_full_under_drop_new) {
     // Real threads: a gated handler occupies the worker, so the one-slot queue can be filled exactly.
-    msgbus bus(1, back_pressure::DROP_NEW);
+    msgbus bus(matcher_type::LAYER, 1, back_pressure::DROP_NEW);
     registrations armed;
     gate g;
     std::atomic<int> ran { 0 };
@@ -593,7 +682,7 @@ TEST(msgbus_test, publish_async_rejects_when_the_routing_queue_is_full_under_dro
 
 TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
     // Real threads: the evicted message is the one that would have run second.
-    msgbus bus(1, back_pressure::DROP_OLDEST);
+    msgbus bus(matcher_type::LAYER, 1, back_pressure::DROP_OLDEST);
     registrations armed;
     gate g;
     std::mutex mutex;
@@ -630,7 +719,7 @@ TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
 
 TEST(msgbus_test, publish_async_under_block_never_rejects_a_full_queue) {
     // Real threads: the gated worker holds the queue full while a publisher parks in publish_async.
-    msgbus bus(1, back_pressure::BLOCK);
+    msgbus bus(matcher_type::LAYER, 1, back_pressure::BLOCK);
     registrations armed;
     gate g;
     std::atomic<int> ran { 0 };
@@ -668,7 +757,7 @@ TEST(msgbus_test, publish_async_from_the_routing_worker_is_rejected_when_the_que
     // Real threads: the handler runs on the routing worker and publishes into the very queue it is
     // draining, which is full. Running inline is impossible for a deferred closure and queuing would
     // deadlock, so the refusal is the documented answer.
-    msgbus bus(1, back_pressure::DROP_NEW);
+    msgbus bus(matcher_type::LAYER, 1, back_pressure::DROP_NEW);
     registrations armed;
     gate g;
     std::atomic<publish_status> nested { publish_status::ACCEPTED };

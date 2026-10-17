@@ -17,6 +17,7 @@
 #include <expected>
 #include <functional>
 #include <string>
+#include <unordered_set>
 
 namespace ba7lya::msgbus {
 
@@ -48,6 +49,10 @@ using topic_name = std::string;
 /// fail to match rather than silently cancel a newer subscription.
 ///
 using subscription_id = std::uint64_t;
+
+/// @brief The id set a trie node holds. A set rather than a list, so a subscriber registered under two
+/// patterns that both match one topic is still reached once.
+using subscription_set = std::unordered_set<subscription_id>;
 
 ///
 /// @brief Everything about a message except its topic and payload.
@@ -110,6 +115,17 @@ enum class back_pressure {
     BLOCK,       ///< Wait for room. Risks stalling the publisher behind a slow consumer.
     DROP_OLDEST, ///< Evict the oldest queued message. Favours freshness, as telemetry does.
     DROP_NEW,    ///< Refuse the new message. Favours what is already queued, as commands do.
+};
+
+///
+/// @brief The pattern language a bus resolves subscriptions with.
+/// @details Chosen when the bus is constructed, because the two disagree on what a subscription means:
+/// under `LAYER` a pattern is matched level by level and `+` / `#` are grammar, while under `PREFIX` a
+/// pattern is a literal path and everything beneath it belongs to the subscription.
+///
+enum class matcher_type {
+    LAYER,  ///< `layer_matcher`: level-by-level matching with `+` and `#` wildcards.
+    PREFIX, ///< `prefix_matcher`: no wildcards; a subscription hears its path and everything below it.
 };
 
 ///

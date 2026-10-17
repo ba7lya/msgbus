@@ -61,7 +61,7 @@ struct probe_level {
         return probe_level { level_kind::MULTI_LEVEL, "#" };
     }
 
-    bool operator==(const probe_level&) const = default;
+    friend bool operator==(const probe_level&, const probe_level&) = default;
 };
 
 /// @brief A sequence of levels, the thing the tree is indexed by.
@@ -78,7 +78,7 @@ struct probe_key {
         return probe_key { std::vector<probe_level>(levels.begin(), levels.end()) };
     }
 
-    bool operator==(const probe_key&) const = default;
+    friend bool operator==(const probe_key&, const probe_key&) = default;
 };
 
 /// @brief The payload the router will store: a set of subscription ids, so a pattern shared by two

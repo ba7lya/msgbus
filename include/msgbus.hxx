@@ -28,7 +28,10 @@
 #include "dispatcher.hxx"
 #include "error.hxx"
 #include "executor.hxx"
+#include "layer_matcher.hxx"
+#include "matcher.hxx"
 #include "msgbus_base.hxx"
+#include "prefix_matcher.hxx"
 #include "router.hxx"
 
 namespace ba7lya::msgbus {
@@ -54,7 +57,15 @@ public:
     /// confused: `publish_async` names this one, and `publish_sync` names `INLINE`.
     static constexpr executor_id ROUTER = 1;
 
+    /// @brief Builds the bus with every setting at its default.
+    /// @details `LAYER` matching, a 4096-message routing queue, `DROP_NEW`, and no failure sink — the
+    /// bus a caller who has not decided anything yet wants.
+    /// @throws std::system_error if the worker thread cannot be created
+    msgbus()
+        : msgbus(matcher_type::LAYER) {}
+
     /// @brief Builds the bus and starts its routing worker.
+    /// @param type the pattern language subscriptions are resolved with
     /// @param queue_capacity how many published messages may wait to be routed;
     /// `executor::UNBOUNDED` for no bound
     /// @param policy what `publish_async` does when that queue is full: `DROP_NEW` answers `REJECTED`,
@@ -68,27 +79,55 @@ public:
     /// @details The worker starts here rather than on the first publish, so a bus a caller holds is a
     /// bus that can be published to; deferring it would only move the creation failure onto a path that
     /// has no error channel.
+    /// @details `type` comes first because it decides what a pattern means, and the other three are
+    /// tuning knobs a caller can leave alone.
     explicit msgbus(
-        std::size_t queue_capacity = 4096, back_pressure policy = back_pressure::DROP_NEW,
+        matcher_type type, std::size_t queue_capacity = 4096, back_pressure policy = back_pressure::DROP_NEW,
         exception_sink on_exception = exception_sink {}
     )
-        : routes_()
-        , dispatch_()
+        : router_(make_matcher(type))
+        , dispatcher_()
         , on_exception_(std::move(on_exception))
         , policy_(policy)
         , worker_(std::make_shared<executor>(queue_capacity, [this](std::exception_ptr failure) {
             report(std::move(failure));
         })) {
-        const bool registered = dispatch_.add(ROUTER, worker_);
+        const bool registered = dispatcher_.add(ROUTER, worker_);
         // Nothing else has run yet, so the only way this fails is a bug in the class itself.
         if (!registered) { throw std::logic_error("the routing worker's id is already taken"); }
     }
 
-    /// @brief Builds the bus with a failure sink and the default queue bound and policy.
-    /// @details The three settings are positional, so a caller naming only the sink would otherwise have
-    /// to restate the first two; this overload is that call.
+    /// @brief Builds the bus over the matcher the caller supplies.
+    /// @details The way to drive the bus with an index this class does not name — a prefix matcher
+    /// with a different spelling, or a third-party implementation of `matcher` — without the bus
+    /// knowing every kind.
+    /// @param patterns the pattern index; must not be null
+    /// @param queue_capacity how many published messages may wait to be routed
+    /// @param policy what `publish_async` does when that queue is full
+    /// @param on_exception where a handler's failure goes when no caller is left to throw it at
+    /// @throws std::invalid_argument if `patterns` is null
+    /// @throws std::system_error if the worker thread cannot be created
+    explicit msgbus(
+        std::unique_ptr<matcher> patterns, std::size_t queue_capacity = 4096,
+        back_pressure policy = back_pressure::DROP_NEW, exception_sink on_exception = exception_sink {}
+    )
+        : router_(std::move(patterns))
+        , dispatcher_()
+        , on_exception_(std::move(on_exception))
+        , policy_(policy)
+        , worker_(std::make_shared<executor>(queue_capacity, [this](std::exception_ptr failure) {
+            report(std::move(failure));
+        })) {
+        const bool registered = dispatcher_.add(ROUTER, worker_);
+        if (!registered) { throw std::logic_error("the routing worker's id is already taken"); }
+    }
+
+    /// @brief Builds the bus with a failure sink and the default pattern language, queue bound and
+    /// policy.
+    /// @details The settings are positional, so a caller naming only the sink would otherwise have
+    /// to restate the others; this overload is that call.
     explicit msgbus(exception_sink on_exception)
-        : msgbus(4096, back_pressure::DROP_NEW, std::move(on_exception)) {}
+        : msgbus(matcher_type::LAYER, 4096, back_pressure::DROP_NEW, std::move(on_exception)) {}
 
     msgbus(const msgbus&) = delete;
     msgbus& operator=(const msgbus&) = delete;
@@ -97,25 +136,6 @@ public:
 
     /// @brief Shuts the bus down: `release()`.
     ~msgbus() override { release(); }
-
-    /// @brief Convenience: a payload-carrying message from a topic string and a value.
-    /// @details Re-declared here because a class that overrides `publish_sync(message)` hides the base's
-    /// convenience overload; without this a caller holding a `msgbus` — rather than a `msgbus_base&` —
-    /// could only build the `message` itself. Same for `publish_async` below.
-    void publish_sync(std::string_view topic, std::any payload) {
-        msgbus_base::publish_sync(topic, std::move(payload));
-    }
-
-    [[nodiscard]]
-    publish_status publish_async(std::string_view topic, std::any payload) {
-        return msgbus_base::publish_async(topic, std::move(payload));
-    }
-
-    /// @brief Convenience: waits without limit for the routing queue to drain.
-    [[nodiscard]]
-    bool flush() {
-        return msgbus_base::flush();
-    }
 
     /// @brief Registers `handler` for every topic matching `pattern`.
     /// @details No lock beyond the router's: the subscription table is the router's alone, so a
@@ -127,7 +147,7 @@ public:
     result<subscription, error> subscribe(
         std::string_view pattern, handler handler, dispatch_options options = {}, error_handler on_error = {}
     ) override {
-        return routes_.subscribe(pattern, std::move(handler), options, std::move(on_error));
+        return router_.subscribe(pattern, std::move(handler), options, std::move(on_error));
     }
 
     /// @brief Cancels a subscription by id.
@@ -135,7 +155,7 @@ public:
     /// it**, not when it was published, so a subscription cancelled first does not see it.
     /// @note The by-id form, kept because the router issues ids and a caller may hold one. A handle
     /// has `subscription::cancel`, which is the form a subscriber normally wants.
-    bool unsubscribe(subscription_id id) override { return routes_.unsubscribe(id); }
+    bool unsubscribe(subscription_id id) override { return router_.unsubscribe(id); }
 
     /// @brief Parses `msg`'s topic and routes it on the calling thread.
     /// @throws std::invalid_argument if the topic is malformed — a publish target is concrete, so a
@@ -151,6 +171,14 @@ public:
     void publish_sync(message msg) override {
         std::shared_ptr<const message> shared = std::make_shared<const message>(std::move(msg));
         deliver_now(shared);
+    }
+
+    /// @brief Convenience: a payload-carrying message from a topic string and a value.
+    /// @details Re-declared here because a class that overrides `publish_sync(message)` hides the base's
+    /// convenience overload; without this a caller holding a `msgbus` — rather than a `msgbus_base&` —
+    /// could only build the `message` itself. Same for `publish_async` below.
+    void publish_sync(std::string_view topic, std::any payload) {
+        msgbus_base::publish_sync(topic, std::move(payload));
     }
 
     /// @brief Queues `msg` for the routing worker.
@@ -169,17 +197,23 @@ public:
         const submit_status outcome = worker_->submit_deferred(
             [this, msg = std::move(msg)]() -> work_item {
                 const std::shared_ptr<const message> shared = std::make_shared<const message>(std::move(msg));
-                return [this, shared] {
-                    // Parsing on the worker keeps the whole delivery — parse, resolve, dispatch — on one
-                    // thread, and it is where `flush`'s promise ends: once this returns, the message has
-                    // been handed to the executors each subscription named.
-                    deliver_now(shared);
-                };
+                return [this, shared] { deliver_now(shared); };
             },
             policy_
         );
         return outcome == submit_status::REJECTED || outcome == submit_status::CLOSED ? publish_status::REJECTED
                                                                                       : publish_status::ACCEPTED;
+    }
+
+    [[nodiscard]]
+    publish_status publish_async(std::string_view topic, std::any payload) {
+        return msgbus_base::publish_async(topic, std::move(payload));
+    }
+
+    /// @brief Convenience: waits without limit for the routing queue to drain.
+    [[nodiscard]]
+    bool flush() {
+        return msgbus_base::flush();
     }
 
     /// @brief Waits until every message accepted so far has been routed.
@@ -210,7 +244,7 @@ public:
     /// subscription can never be moved off them by accident.
     [[nodiscard]]
     dispatcher& executors() noexcept {
-        return dispatch_;
+        return dispatcher_;
     }
 
     /// @brief Registers an executor of the bus's own making under `id`.
@@ -218,7 +252,7 @@ public:
     /// @details Convenience for the common case; the same thing is reachable through `executors()`.
     [[nodiscard]]
     bool add_executor(executor_id id, std::size_t capacity = executor::UNBOUNDED) {
-        return dispatch_.add(id, capacity, [this](std::exception_ptr failure) { report(std::move(failure)); });
+        return dispatcher_.add(id, capacity, [this](std::exception_ptr failure) { report(std::move(failure)); });
     }
 
     /// @brief Stops and forgets the executor registered under `id`.
@@ -226,19 +260,19 @@ public:
     [[nodiscard]]
     bool remove_executor(executor_id id) {
         if (id == ROUTER) { return false; }
-        return dispatch_.remove(id);
+        return dispatcher_.remove(id);
     }
 
     /// @brief How many subscriptions are live.
     [[nodiscard]]
     std::size_t subscription_count() const noexcept {
-        return routes_.subscription_count();
+        return router_.subscription_count();
     }
 
     /// @brief Whether any subscription is live.
     [[nodiscard]]
     bool empty() const noexcept {
-        return routes_.empty();
+        return router_.empty();
     }
 
     /// @brief How many messages the routing worker has finished routing.
@@ -254,7 +288,7 @@ public:
     /// registered, or a queue that answered `REJECTED` / `CLOSED`.
     [[nodiscard]]
     std::uint64_t dropped() const noexcept {
-        return dispatch_.dropped();
+        return dispatcher_.dropped();
     }
 
     /// @brief The routing worker's counters, read as one snapshot.
@@ -277,10 +311,22 @@ public:
         const bool quiescent = worker_->drain();
         static_cast<void>(quiescent);
         worker_->release();
-        dispatch_.release();
+        dispatcher_.release();
     }
 
 private:
+    /// @brief Builds the concrete matcher `type` names.
+    /// @details The one place the enum and the classes are tied together, so the constructor does not
+    /// name an implementation and a third kind is one line here.
+    [[nodiscard]]
+    static std::unique_ptr<matcher> make_matcher(matcher_type type) {
+        switch (type) {
+        case matcher_type::PREFIX: return std::make_unique<prefix_matcher>();
+        case matcher_type::LAYER:
+        default:                   return std::make_unique<layer_matcher>();
+        }
+    }
+
     /// @brief Parses `msg->topic_`, resolves it, and hands the deliveries to the dispatcher.
     /// @details One body shared by `publish_sync` and the worker, so a synchronous and an asynchronous
     /// publish cannot drift apart in what they deliver or in what they do about failure.
@@ -293,11 +339,11 @@ private:
             );
         }
 
-        const std::vector<delivery> routes = routes_.resolve(parsed->levels());
+        const std::vector<delivery> routes = router_.resolve(parsed->levels());
         // The dispatcher's own error handler is this bus's channel: by the time it is called, every
         // remaining caller has returned.
         const std::exception_ptr failure
-            = dispatch_.dispatch(routes, msg, [this](const message&, std::exception_ptr cause) {
+            = dispatcher_.dispatch(routes, msg, [this](const message&, std::exception_ptr cause) {
                   report(std::move(cause));
               });
         if (failure) { std::rethrow_exception(failure); }
@@ -318,9 +364,9 @@ private:
     }
 
     /// @brief The subscription table and the topic-to-subscriber resolution.
-    router routes_;
+    router router_;
     /// @brief The executors, including the routing worker placed under `ROUTER`.
-    dispatcher dispatch_;
+    dispatcher dispatcher_;
     /// @brief The bus-level failure sink, shared with `worker_` from construction.
     exception_sink on_exception_;
     /// @brief What `publish_async` does when the routing queue is full. Fixed at construction.

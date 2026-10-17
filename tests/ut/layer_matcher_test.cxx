@@ -366,23 +366,18 @@ TEST(match_test, matching_a_topic_that_is_not_a_topic_fails) {
     }
 }
 
-TEST(match_test, matching_into_a_caller_set_appends) {
+TEST(match_test, matching_returns_the_subscriptions_of_that_topic_alone) {
     layer_matcher matcher;
     subscribe(matcher, "a", 1);
     subscribe(matcher, "b", 2);
 
-    subscription_set matched;
     const auto first = parse_topic("a");
     ASSERT_TRUE(first.has_value());
-    matcher.match(first.value().levels(), matched);
-    EXPECT_EQ(matched, (subscription_set { 1 }));
+    EXPECT_EQ(matcher.match(first.value().texts()), (subscription_set { 1 }));
 
     const auto second = parse_topic("b");
     ASSERT_TRUE(second.has_value());
-    matcher.match(second.value().levels(), matched);
-
-    // Appends rather than clears: the caller decides when a set is spent.
-    EXPECT_EQ(matched, (subscription_set { 1, 2 }));
+    EXPECT_EQ(matcher.match(second.value().texts()), (subscription_set { 2 }));
 }
 
 // --- registration ----------------------------------------------------------------------------------

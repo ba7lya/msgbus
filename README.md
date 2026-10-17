@@ -28,6 +28,19 @@ registers a pattern over the same shape:
 Patterns are compiled into a trie, so resolution costs one step per level rather than one comparison
 per subscription, and a topic with no live subscription under it is answered without a walk.
 
+The bus resolves patterns with one of two matchers, chosen at construction:
+
+| `matcher_type` | Subscription means | Wildcards |
+|---|---|---|
+| `LAYER` (default) | the topic the pattern spells, level by level | `+` and `#` as above |
+| `PREFIX` | that path and every topic below it | none; `+` and `#` are rejected |
+
+```cpp
+msgbus layered;                                  // "site/+/device7"
+msgbus prefixed(matcher_type::PREFIX);           // "site/line1" hears site/line1/...
+msgbus custom(std::make_unique<my_matcher>());   // any `matcher` implementation
+```
+
 ## The bus
 
 ```cpp
@@ -113,7 +126,7 @@ $ ctest --preset linux-gcc-x64-test -C Debug
 
 | Target | Source | What it is |
 |---|---|---|
-| `ba7lya.msgbus.ut` | `tests/ut/` | GoogleTest suite, one file per unit (`trie`, `layer_matcher`, `router`, `executor`, `dispatcher`, `msgbus`) |
+| `ba7lya.msgbus.ut` | `tests/ut/` | GoogleTest suite, one file per unit (`trie`, `layer_matcher`, `prefix_matcher`, `router`, `executor`, `dispatcher`, `msgbus`) |
 | `msgbus_benchmark` | `benchmark/` | google benchmark: parse, matcher cycle/match, router resolve, sync fan-out, async round trip |
 | `msgbus_example_basic_matching` | `examples/basic_matching.cxx` | two overlapping patterns, three publishes, and which subscriber saw what |
 | `msgbus_example_wildcards` | `examples/wildcards.cxx` | five overlapping patterns and a reach matrix checked against a probe bus |

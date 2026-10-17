@@ -1,0 +1,328 @@
+@startuml class-diagram
+' SPDX-License-Identifier: MIT
+'
+' The header-only library, as types and their relationships.
+' Render with:  plantuml -tsvg uml/class-diagram.puml
+'
+' Members are listed where they carry a design decision: the matcher a router holds, the executor a
+' bus owns, the two tables a matcher keeps. Accessors that only restate a member are left out, so the
+' diagram stays readable.
+
+title ba7lya.msgbus — class diagram
+
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam class {
+  BackgroundColor #FDFDFD
+  BorderColor #4A4A4A
+}
+hide empty members
+hide circle
+
+package "ba7lya::msgbus — the bus" {
+
+  abstract class msgbus_base {
+    +subscribe(pattern, handler, options, on_error) : result<subscription, error> {abstract}
+    +unsubscribe(id) : bool {abstract}
+    +publish_sync(message) {abstract}
+    +publish_async(message) : publish_status {abstract}
+    +flush(timeout) : bool {abstract}
+  }
+
+  class msgbus <<final>> {
+    +{static} ROUTER : executor_id = 1
+    +msgbus()
+    +msgbus(type, queue_capacity, policy, on_exception)
+    +msgbus(matcher, queue_capacity, policy, on_exception)
+    +executors() : dispatcher&
+    +add_executor(id, capacity) : bool
+    +remove_executor(id) : bool
+    +subscription_count() : size_t
+    +routed() : uint64_t
+    +dropped() : uint64_t
+    +worker_stats() : executor_stats
+    +release()
+    --
+    -{static} make_matcher(type) : unique_ptr<matcher>
+    -deliver_now(msg)
+    -report(failure)
+    -router_ : router
+    -dispatcher_ : dispatcher
+    -on_exception_ : exception_sink
+    -policy_ : back_pressure = DROP_NEW
+    -worker_ : shared_ptr<executor>
+    -routed_ : atomic<uint64_t>
+  }
+
+  abstract class subscription_owner {
+    +unsubscribe(id) : bool {abstract}
+  }
+
+  class subscription <<move-only handle>> {
+    +cancel() : bool
+    +id() : subscription_id
+    +owns() : bool
+    --
+    -owner_ : subscription_owner*
+    -id_ : subscription_id = 0
+  }
+
+  class message {
+    +topic_ : topic_name
+    +payload_ : any
+    +meta_ : message_meta
+  }
+
+  class message_meta {
+    +stamp_ : system_clock::time_point
+    +source_ : string
+    +seq_ : uint64_t = 0
+  }
+
+  struct dispatch_options {
+    +executor_ : executor_id = 0
+    +policy_ : back_pressure = DROP_OLDEST
+  }
+
+  class error {
+    +code_ : error_code = EMPTY_INPUT
+    +text_ : string
+    +where_ : size_t = npos
+    +{static} make(code, text, where) : error
+  }
+
+  enum publish_status {
+    ACCEPTED
+    REJECTED
+  }
+
+  enum back_pressure {
+    BLOCK
+    DROP_OLDEST
+    DROP_NEW
+  }
+
+  enum matcher_type {
+    LAYER
+    PREFIX
+  }
+
+  note bottom of matcher_type
+    LAYER  -> layer_matcher   (+ / # grammar)
+    PREFIX -> prefix_matcher  (a literal path and everything below)
+    make_matcher() is the only place the two are tied together.
+  end note
+
+  enum error_code {
+    EMPTY_INPUT
+    EMPTY_LEVEL
+    INVALID_CHARACTER
+    INVALID_WILDCARD
+    TRAILING_WILDCARD_NOT_LAST
+    WILDCARD_IN_TOPIC
+    NO_SUCH_LEVEL
+    DUPLICATE_PATTERN
+  }
+
+  enum level_kind {
+    LITERAL
+    SINGLE_LEVEL
+    MULTI_LEVEL
+  }
+}
+
+package "routing" {
+
+  class router <<not copyable>> {
+    +subscribe(pattern, callback, options, on_error) : result<subscription, error>
+    +unsubscribe(id) : bool
+    +resolve(topic) : vector<delivery>
+    +{static} deliver(route, msg) : exception_ptr
+    +{static} deliver_all(routes, msg) : exception_ptr
+    +subscription_count() : size_t
+    --
+    -mutex_ : mutable shared_mutex
+    -matcher_ : unique_ptr<matcher>
+    -handlers_ : unordered_map<subscription_id, registration>
+    -next_id_ : subscription_id = 1
+  }
+
+  struct delivery {
+    +id_ : subscription_id = 0
+    +callback_ : handler
+    +on_error_ : error_handler
+    +options_ : dispatch_options
+  }
+
+  class dispatcher <<not copyable>> {
+    +{static} INLINE : executor_id = 0
+    +add(id, exec) : bool
+    +add(id, capacity, on_exception) : bool
+    +remove(id) : bool
+    +find(id) : shared_ptr<executor>
+    +dispatch(routes, msg, on_failure) : exception_ptr
+    +dropped() : uint64_t
+    +release()
+    --
+    -mutex_ : mutable shared_mutex
+    -executors_ : unordered_map<executor_id, shared_ptr<executor>>
+    -dropped_ : atomic<uint64_t>
+  }
+
+  abstract class matcher {
+    +add(pattern, id) : result<subscription_id, error> {abstract}
+    +remove(id) : bool {abstract}
+    +match(levels : span<const string_view>) : subscription_set {abstract}
+  }
+
+  class layer_matcher {
+    +add(path, id) : result<subscription_id, error>
+    +pattern_count(id) : size_t
+    +match_topic(topic) : result<subscription_set, error>
+    +payload_at(path) : const subscription_set*
+    +collect() : vector<pair<topic_path, subscription_set>>
+    --
+    -tree_ : trie<subscription_set, topic_level>
+    -by_subscription_ : unordered_map<subscription_id, vector<topic_path>>
+  }
+
+  class prefix_matcher {
+    +add(path, id) : result<subscription_id, error>
+    +pattern_count(id) : size_t
+    +match_topic(topic) : result<subscription_set, error>
+    +payload_at(path) : const subscription_set*
+    +collect() : vector<pair<topic_path, subscription_set>>
+    --
+    -tree_ : trie<subscription_set, topic_level>
+    -by_subscription_ : unordered_map<subscription_id, vector<topic_path>>
+  }
+}
+
+package "execution" {
+
+  class executor <<not copyable>> {
+    +{static} UNBOUNDED : size_t = 0
+    +submit(item, policy) : submit_status
+    +submit_deferred(build, policy) : submit_status
+    +close()
+    +release()
+    +drain(timeout) : bool
+    +pending() : size_t
+    +accepting() : bool
+    +is_on_worker_thread() : bool
+    +stats() : executor_stats
+    --
+    -capacity_ : size_t
+    -on_exception_ : exception_sink
+    -mutex_ : mutable mutex
+    -not_empty_ : condition_variable
+    -not_full_ : condition_variable
+    -idle_ : condition_variable
+    -queue_ : deque<work_item>
+    -accepting_ : bool = true
+    -running_ : bool = false
+    -live_ : bool = true
+    -worker_ : jthread
+  }
+
+  struct executor_stats {
+    +submitted_ : uint64_t
+    +dropped_ : uint64_t
+    +rejected_ : uint64_t
+    +completed_ : uint64_t
+    +failed_ : uint64_t
+  }
+
+  enum submit_status {
+    ACCEPTED
+    DROPPED_OLDEST
+    REJECTED
+    CLOSED
+  }
+}
+
+package "storage" {
+
+  class topic_level {
+    +kind_ : level_kind = LITERAL
+    +text_ : string
+    +kind() : level_kind
+    +text() : string_view
+  }
+
+  class topic_path {
+    +levels_ : vector<topic_level>
+    +levels() : span<const topic_level>
+    +{static} from_levels(levels) : topic_path
+  }
+
+  class trie<Payload, Level> <<template>> {
+    +table_for(levels) : Payload&
+    +is_empty() : bool
+    +payload_at(levels, into) : bool
+    --
+    -exact_match_data_ : optional<Payload>
+    -exact_children_ : unordered_map<string, unique_ptr<trie>>
+    -single_level_wildcard_node_ : unique_ptr<trie>
+    -multi_level_wildcard_data_ : optional<Payload>
+  }
+
+  note right of trie
+    Indexed by any Level satisfying trie_level: kind(), text(),
+    literal(), single_level(), multi_level(). Payload is any
+    container that can say whether it is empty.
+  end note
+}
+
+' --- inheritance ---
+msgbus_base <|-- msgbus
+subscription_owner <|-- router
+matcher <|.. layer_matcher
+matcher <|.. prefix_matcher
+
+' --- composition and ownership ---
+msgbus *-- router : router_
+msgbus *-- dispatcher : dispatcher_
+msgbus o-- executor : worker_ (shared)
+dispatcher o-- executor : executors_
+router o-- matcher : matcher_
+router *-- delivery : resolve() snapshot
+layer_matcher *-- trie : tree_
+prefix_matcher *-- trie : tree_
+subscription --> subscription_owner : owner_
+message *-- message_meta
+
+' --- use ---
+msgbus ..> matcher_type : make_matcher()
+msgbus ..> subscription : subscribe()
+router ..> subscription : issues
+router ..> matcher : add / remove / match
+delivery ..> dispatch_options
+dispatcher ..> delivery : dispatch()
+msgbus ..> message
+msgbus ..> executor_stats
+trie o-- topic_level : Level
+layer_matcher ..> topic_path
+prefix_matcher ..> topic_path
+error_code -- error
+
+note right of msgbus
+  Publishing path, in one line:
+  parse -> router.resolve -> dispatcher.dispatch
+  -> executor.submit | router.deliver (inline)
+end note
+
+note bottom of router
+  One shared_mutex guards both tables, so a publisher sees a
+  subscription in both or in neither. resolve() copies the handlers
+  and releases the lock before returning: a handler may subscribe
+  from inside a delivery.
+end note
+
+note bottom of executor
+  One thread per executor, never a shared pool: a handler on
+  executor X always runs on the same thread.
+end note
+
+@enduml

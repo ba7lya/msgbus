@@ -62,10 +62,6 @@ struct error {
     /// @brief The offset used when a failure has no single position.
     static constexpr std::size_t npos = static_cast<std::size_t>(-1);
 
-    error_code code_ = error_code::EMPTY_INPUT;
-    std::string text_;
-    std::size_t where_ = npos;
-
     /// @brief Builds an error with no position.
     [[nodiscard]]
     static error make(error_code code, std::string_view text) {
@@ -77,12 +73,16 @@ struct error {
     static error make(error_code code, std::string_view text, std::size_t where) {
         return error { code, std::string(text), where };
     }
-};
 
-/// @brief Whether two errors describe the same failure of the same text at the same place.
-[[nodiscard]]
-inline bool operator==(const error& lhs, const error& rhs) noexcept {
-    return lhs.code_ == rhs.code_ && lhs.where_ == rhs.where_ && lhs.text_ == rhs.text_;
-}
+    /// @brief Whether two errors describe the same failure of the same text at the same place.
+    /// @details A hidden friend so the comparison is found by argument-dependent lookup only, which keeps
+    /// it out of the overload set of every translation unit that includes this header.
+    [[nodiscard]]
+    friend bool operator==(const error&, const error&) = default;
+
+    error_code code_ = error_code::EMPTY_INPUT;
+    std::string text_;
+    std::size_t where_ = npos;
+};
 
 } // namespace ba7lya::msgbus

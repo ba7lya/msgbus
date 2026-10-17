@@ -146,11 +146,12 @@ static void bm_matcher_cycle(::benchmark::State& state) {
 
 BENCHMARK(bm_matcher_cycle)->Arg(1)->Arg(5)->Unit(::benchmark::kMicrosecond);
 
-/// @brief The trie walk alone, with the ids collected into one reused set.
+/// @brief The trie walk alone, with the result discarded as it comes back.
 ///
 /// `layer_matcher` is the pattern index rather than the public API, and the walk is the whole of
-/// what it does on the read path. Reusing the set across iterations is deliberate: it takes the
-/// allocator out of the number, so what is left is the walk.
+/// what it does on the read path. What the walk costs to allocate is part of the number: the match
+/// now returns its own set, so the allocation is inside the measurement rather than hoisted out of
+/// it the way a caller's reused set would be.
 static void bm_matcher_match(::benchmark::State& state) {
     layer_matcher matcher;
     for (std::int64_t i = 0; i < state.range(0); ++i) {
@@ -166,12 +167,7 @@ static void bm_matcher_match(::benchmark::State& state) {
         return;
     }
 
-    subscription_set matched;
-    for (auto _ : state) {
-        matched.clear();
-        matcher.match(parsed->levels(), matched);
-        ::benchmark::DoNotOptimize(matched.size());
-    }
+    for (auto _ : state) { ::benchmark::DoNotOptimize(matcher.match(parsed->texts())); }
     state.SetItemsProcessed(state.iterations() * state.range(0));
 }
 
@@ -303,7 +299,7 @@ BENCHMARK(bm_publish_async_round_trip)->Arg(1)->Arg(64)->Unit(::benchmark::kMicr
 /// evicts its predecessor. This is the only benchmark here whose subject is the queue's bound rather
 /// than the routing table, and it is the price a slow subscriber puts on its publisher.
 static void bm_publish_async_drop_oldest(::benchmark::State& state) {
-    msgbus bus { 1, back_pressure::DROP_OLDEST };
+    msgbus bus { matcher_type::LAYER, 1, back_pressure::DROP_OLDEST };
     std::vector<subscription> armed;
     if (!add_inline_subscriptions(bus, "site/#", 1, armed)) {
         state.SkipWithError("the benchmark's own subscription pattern was rejected");

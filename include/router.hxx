@@ -16,6 +16,7 @@
 #include <exception>
 #include <expected>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <span>
@@ -28,6 +29,7 @@
 #include "common.hxx"
 #include "error.hxx"
 #include "layer_matcher.hxx"
+#include "matcher.hxx"
 #include "subscription.hxx"
 
 namespace ba7lya::msgbus {
@@ -50,9 +52,10 @@ struct delivery {
 
 ///
 /// @brief Owns the subscriptions and turns a topic into the list of handlers that match it.
-/// @details Two tables under one lock: the pattern index (`layer_matcher`) and the handler table.
-/// One lock over both is what makes subscribe-then-publish coherent — a publisher either sees a
-/// subscription in both tables or in neither, never in one.
+/// @details Two tables under one lock: the pattern index (a `matcher`, `layer_matcher` unless the
+/// caller names another) and the handler table. One lock over both is what makes
+/// subscribe-then-publish coherent — a publisher either sees a subscription in both tables or in
+/// neither, never in one.
 /// @details Nothing user-supplied ever runs under the lock. `resolve` copies the handlers it matches
 /// and releases the lock before returning, so a handler is free to subscribe or unsubscribe from
 /// inside a delivery without deadlocking on its own router.
@@ -67,7 +70,19 @@ struct delivery {
 ///
 class router : public subscription_owner {
 public:
-    router() = default;
+    /// @brief Builds a router over the default pattern index, a `layer_matcher`.
+    router()
+        : matcher_(std::make_unique<layer_matcher>()) {}
+
+    /// @brief Builds a router over the matcher the caller supplies.
+    /// @param patterns the pattern index; must not be null, and must outlive nothing but this router
+    /// @throws std::invalid_argument if `patterns` is null
+    /// @details The way to build the bus over a different matcher — `prefix_matcher`, for instance —
+    /// without the router naming every implementation.
+    explicit router(std::unique_ptr<matcher> patterns)
+        : matcher_(std::move(patterns)) {
+        if (!matcher_) { throw std::invalid_argument("the matcher must not be null"); }
+    }
 
     router(const router&) = delete;
     router& operator=(const router&) = delete;
@@ -85,7 +100,7 @@ public:
     /// @throws std::invalid_argument if `callback` is empty. An empty handler is a programming error
     /// rather than a value the caller is expected to handle, so it is not an `error_code`.
     /// @note A rejected pattern does not consume an id: the counter advances only on success.
-    /// @note The id is issued here and nowhere else, which is why `layer_matcher::add` takes it as a
+    /// @note The id is issued here and nowhere else, which is why `matcher::add` takes it as a
     /// parameter. Ids start at 1; 0 is reserved for "never issued".
     /// @note The returned handle owns the registration: dropping it cancels the subscription, so a
     /// caller that wants the subscription to outlive the statement that armed it must keep the handle.
@@ -99,7 +114,7 @@ public:
         const std::unique_lock lock(mutex_);
 
         const subscription_id id = next_id_;
-        const auto added = patterns_.add(pattern, id);
+        const auto added = matcher_->add(pattern, id);
         if (!added) { return std::unexpected(added.error()); }
 
         next_id_ = id + 1;
@@ -124,7 +139,7 @@ public:
         if (live == handlers_.end()) { return false; }
         handlers_.erase(live);
 
-        const bool pruned = patterns_.remove(id);
+        const bool pruned = matcher_->remove(id);
         // Both tables move under the one lock, so a live handler without patterns is a broken
         // invariant rather than a case to handle.
         assert(pruned && "a live handler without a pattern is an invariant broken");
@@ -136,7 +151,7 @@ public:
     /// @param topic the published topic's levels; every one of them must be a literal
     /// @details Callers parse, not the router: a publish must report a malformed topic once, and
     /// parsing here would either duplicate that or grow this method an error channel. Use
-    /// `parse_topic` from `layer_matcher.hxx`.
+    /// `parse_topic` from `topic.hxx`.
     /// @details The snapshot is taken under the shared lock and the lock is released before
     /// returning, which is what lets a handler register or cancel from inside a delivery.
     /// @note A subscription cancelled after this returns is still delivered: the `delivery` holds its
@@ -146,10 +161,17 @@ public:
     /// must not read meaning into it.
     [[nodiscard]]
     std::vector<delivery> resolve(std::span<const topic_level> topic) const {
+        std::vector<std::string_view> levels;
+        levels.reserve(topic.size());
+        for (const topic_level& level : topic) {
+            // A published topic is all literals by the grammar, so the level kind carries no meaning here.
+            assert(level.is_literal() && "a published topic level is never a wildcard");
+            levels.push_back(level.text());
+        }
+
         const std::shared_lock lock(mutex_);
 
-        subscription_set matched;
-        patterns_.match(topic, matched);
+        const subscription_set matched = matcher_->match(levels);
 
         std::vector<delivery> routes;
         routes.reserve(matched.size());
@@ -235,8 +257,8 @@ private:
     /// @brief Guards both tables below. Exclusive for a registration or a cancellation, shared for a
     /// resolution.
     mutable std::shared_mutex mutex_;
-    /// @brief The patterns, and which subscriptions each holds.
-    layer_matcher patterns_;
+    /// @brief The matcher, and which subscriptions each pattern holds.
+    std::unique_ptr<matcher> matcher_;
     /// @brief The subscriptions by id. The authority on liveness.
     std::unordered_map<subscription_id, registration> handlers_;
     /// @brief The next id to issue. 0 is reserved for "never issued".

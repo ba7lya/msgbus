@@ -143,16 +143,15 @@ public:
 
     /// @brief Whether the two handles name the same subscription.
     /// @details An empty handle compares equal to another empty one, which is what makes "this
-    /// subscription is gone" checkable without consulting the bus.
+    /// subscription is gone" checkable without consulting the bus. A hidden friend so that the
+    /// comparison is found by argument-dependent lookup and never by an unqualified search.
     [[nodiscard]]
-    bool operator==(const subscription& rhs) const noexcept {
-        return owner_ == rhs.owner_ && id_ == rhs.id_;
-    }
+    friend bool operator==(const subscription&, const subscription&) = default;
 
     /// @brief Whether this handle owns `id`.
     [[nodiscard]]
-    bool operator==(subscription_id id) const noexcept {
-        return id_ == id;
+    friend bool operator==(const subscription& handle, subscription_id id) noexcept {
+        return handle.id_ == id;
     }
 
 private:

@@ -87,8 +87,9 @@ struct trie_miss {
     /// @brief How many levels the walk descended before it failed.
     std::size_t depth_ = 0;
 
+    /// @brief Whether two misses name the same level at the same depth.
     [[nodiscard]]
-    bool operator==(const trie_miss&) const = default;
+    friend bool operator==(const trie_miss&, const trie_miss&) = default;
 };
 
 ///
