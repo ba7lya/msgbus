@@ -175,7 +175,7 @@ public:
             }
             ++submitted_;
             lock.unlock();
-            const bool ok = invoke(item);
+            const auto ok = invoke(item);
             {
                 const std::unique_lock guard(mutex_);
                 if (ok) { ++completed_; }
@@ -206,7 +206,7 @@ public:
             // the policy only promises freshness. The victim dies after the lock is released, so
             // releasing what it captured — the last reference to a shared message, say — never runs
             // under the executor's mutex.
-            work_item victim = std::move(queue_.front());
+            auto victim = std::move(queue_.front());
             queue_.pop_front();
             queue_.push_back(std::move(item));
             ++submitted_;
@@ -284,13 +284,13 @@ public:
         // Room is secured — for `BLOCK`, by the wait above; for `DROP_OLDEST`, by the eviction below.
         // Build first: it cannot park, so the slot stays held from here to the `push_back`, and no second
         // waiter can slip in.
-        work_item item = build();
+        auto item = build();
         if (!item) { throw std::invalid_argument("the deferred work item must not be empty"); }
 
         if (policy == back_pressure::DROP_OLDEST && !has_room()) {
             // As in `submit`: the longest-waiting item loses, and the victim dies after the lock is
             // released.
-            work_item victim = std::move(queue_.front());
+            auto victim = std::move(queue_.front());
             queue_.pop_front();
             queue_.push_back(std::move(item));
             ++submitted_;
@@ -330,7 +330,7 @@ public:
     void release() noexcept {
         close();
 
-        bool on_worker = false;
+        auto on_worker = false;
         {
             const std::unique_lock lock(mutex_);
             on_worker = std::this_thread::get_id() == worker_id_;
@@ -476,7 +476,7 @@ private:
                 not_full_.notify_one();
             }
 
-            const bool ok = invoke(item);
+            const auto ok = invoke(item);
 
             {
                 const std::unique_lock lock(mutex_);

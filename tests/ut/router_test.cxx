@@ -73,7 +73,7 @@ public:
     [[nodiscard]]
     std::vector<std::string> sorted() const {
         const std::scoped_lock guard(mutex_);
-        std::vector<std::string> out = received_;
+        auto out = received_;
         std::ranges::sort(out);
         return out;
     }
@@ -131,8 +131,8 @@ public:
         EXPECT_TRUE(registered.has_value()) << "on " << pattern;
         if (!registered.has_value()) { return 0; }
 
-        subscription handle = *std::move(registered);
-        const subscription_id id = handle.id();
+        auto handle = *std::move(registered);
+        const auto id = handle.id();
         handles_.push_back(std::move(handle));
         return id;
     }
@@ -158,7 +158,7 @@ std::vector<subscription_id> resolved_ids(const router& bus, std::string_view to
         return {};
     }
     std::vector<subscription_id> ids;
-    for (const delivery& route : bus.resolve(parsed.value().levels())) { ids.push_back(route.id_); }
+    for (const auto& edge : bus.resolve(parsed.value().levels())) { ids.push_back(edge.id_); }
     std::ranges::sort(ids);
     return ids;
 }
@@ -179,7 +179,7 @@ std::exception_ptr publish(const router& bus, topic name) {
         ADD_FAILURE() << "expected " << name << " to be a topic";
         return nullptr;
     }
-    const std::vector<delivery> routes = bus.resolve(parsed.value().levels());
+    const auto routes = bus.resolve(parsed.value().levels());
     return router::deliver_all(routes, message { std::move(name), {}, {} });
 }
 
@@ -453,7 +453,7 @@ TEST(router_test, a_throwing_handler_with_no_error_handler_is_returned_to_the_ca
     armed.add(bus, "device/room1/temp", [](const message&) { throw std::runtime_error("boom"); });
     armed.add(bus, "sensor/room1/temp", sibling.callback());
 
-    const std::exception_ptr failure = publish(bus, "device/room1/temp");
+    const auto failure = publish(bus, "device/room1/temp");
 
     ASSERT_NE(failure, nullptr);
     EXPECT_EQ(sibling.count(), 0u) << "the sibling subscribes to another topic";
@@ -475,7 +475,7 @@ TEST(router_test, an_error_handler_that_throws_does_not_stop_delivery) {
     armed.add(bus, "device/#", [](const message&) { throw std::runtime_error("boom"); }, {}, on_error);
     armed.add(bus, "device/room1/temp", sibling.callback());
 
-    const std::exception_ptr failure = publish(bus, "device/room1/temp");
+    const auto failure = publish(bus, "device/room1/temp");
 
     EXPECT_EQ(failure, nullptr) << "the first route consumed its own failure; the second succeeded";
     EXPECT_EQ(sibling.count(), 1u);
@@ -489,10 +489,10 @@ TEST(router_test, only_the_first_unhandled_exception_is_returned) {
 
     const auto parsed = parse_topic("device/room1/temp");
     ASSERT_TRUE(parsed.has_value());
-    const std::vector<delivery> routes = bus.resolve(parsed.value().levels());
+    const auto routes = bus.resolve(parsed.value().levels());
     ASSERT_EQ(routes.size(), 2u);
 
-    const std::exception_ptr failure = router::deliver_all(routes, make_message("device/room1/temp", ""));
+    const auto failure = router::deliver_all(routes, make_message("device/room1/temp", ""));
     ASSERT_NE(failure, nullptr);
 
     std::string message_text;
@@ -515,7 +515,7 @@ TEST(router_test, each_subscription_is_handed_the_message_it_was_sent) {
 
     const auto parsed = parse_topic("device/room1/temp");
     ASSERT_TRUE(parsed.has_value());
-    const std::vector<delivery> routes = bus.resolve(parsed.value().levels());
+    const auto routes = bus.resolve(parsed.value().levels());
     sink(router::deliver_all(routes, make_message("device/room1/temp", "22.5")));
 
     EXPECT_EQ(seen, "22.5");
@@ -555,7 +555,7 @@ TEST(router_test, a_subscription_cancelled_after_the_snapshot_still_runs) {
 
     const auto parsed = parse_topic("device/room1/temp");
     ASSERT_TRUE(parsed.has_value());
-    const std::vector<delivery> routes = bus.resolve(parsed.value().levels());
+    const auto routes = bus.resolve(parsed.value().levels());
     ASSERT_EQ(routes.size(), 1u);
 
     ASSERT_TRUE(bus.unsubscribe(id)) << "the subscription is live when the snapshot is taken";
@@ -573,7 +573,7 @@ TEST(router_test, a_snapshot_does_not_see_a_subscription_added_after_it) {
     const auto parsed = parse_topic("device/room1/temp");
     ASSERT_TRUE(parsed.has_value());
 
-    const std::vector<delivery> routes = bus.resolve(parsed.value().levels());
+    const auto routes = bus.resolve(parsed.value().levels());
     ASSERT_TRUE(routes.empty());
 
     armed.add(bus, "device/room1/temp", late.callback());
@@ -590,7 +590,7 @@ TEST(router_test, dispatch_options_travel_with_the_delivery) {
 
     const auto parsed = parse_topic("device/room1/temp");
     ASSERT_TRUE(parsed.has_value());
-    const std::vector<delivery> routes = bus.resolve(parsed.value().levels());
+    const auto routes = bus.resolve(parsed.value().levels());
 
     ASSERT_EQ(routes.size(), 1u);
     EXPECT_EQ(routes.front().options_.executor_, PORT_EXECUTOR);

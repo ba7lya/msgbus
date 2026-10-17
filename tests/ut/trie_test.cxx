@@ -112,7 +112,7 @@ protected:
     [[nodiscard]]
     static std::vector<probe_level> levels(std::initializer_list<const char*> texts) {
         std::vector<probe_level> out;
-        for (const char* text : texts) {
+        for (const auto* text : texts) {
             const std::string_view spelling(text);
             if (spelling == "+") { out.push_back(probe_level::single_level()); }
             else if (spelling == "#") { out.push_back(probe_level::multi_level()); }
@@ -136,7 +136,7 @@ protected:
         std::vector<std::pair<std::string, std::vector<int>>> out;
         for (const auto& [key, payload] : tree.collect_payloads<probe_key>()) {
             std::string spelling;
-            for (const probe_level& level : key.levels_) {
+            for (const auto& level : key.levels_) {
                 if (!spelling.empty()) { spelling += '/'; }
                 spelling += level.text();
             }
@@ -151,8 +151,8 @@ protected:
     [[nodiscard]]
     static std::vector<bool> reachable(const probe_tree& tree, std::initializer_list<const char*> literal_levels) {
         std::vector<bool> found;
-        const probe_tree* node = &tree;
-        for (const char* level : literal_levels) {
+        const auto* node = &tree;
+        for (const auto* level : literal_levels) {
             node = node->exact_child(level);
             found.push_back(node != nullptr);
             if (node == nullptr) { break; }
@@ -191,7 +191,7 @@ TEST_F(trie_test_fixture, a_wildcard_level_gets_one_shared_subtree) {
     add(tree, levels({ "device", "+", "humidity" }), 2);
 
     ASSERT_NE(tree.exact_child("device"), nullptr);
-    const probe_tree* wildcard = tree.exact_child("device")->single_level_wildcard_child();
+    const auto* wildcard = tree.exact_child("device")->single_level_wildcard_child();
     ASSERT_NE(wildcard, nullptr);
     EXPECT_EQ(tree.exact_child("device")->exact_child("+"), nullptr);
     ASSERT_NE(wildcard->exact_child("temp"), nullptr);
@@ -205,7 +205,7 @@ TEST_F(trie_test_fixture, a_multi_level_level_ends_the_path) {
     add(tree, levels({ "device", "#" }), 1);
 
     ASSERT_NE(tree.exact_child("device"), nullptr);
-    const probe_tree* device = tree.exact_child("device");
+    const auto* device = tree.exact_child("device");
     EXPECT_EQ(device->exact_match_payload(), nullptr);
     EXPECT_EQ(device->single_level_wildcard_child(), nullptr);
     ASSERT_NE(device->multi_level_wildcard_payload(), nullptr);
@@ -215,11 +215,11 @@ TEST_F(trie_test_fixture, a_multi_level_level_ends_the_path) {
 
 TEST_F(trie_test_fixture, a_multi_level_level_stops_the_walk) {
     probe_tree tree;
-    id_set& table = tree.table_for(levels({ "device", "#", "temp" }));
+    auto& table = tree.table_for(levels({ "device", "#", "temp" }));
 
     // The walk ends at `#`, so the returned table is the one stored at `#` and `temp` was never visited.
     ASSERT_NE(tree.exact_child("device"), nullptr);
-    const probe_tree* device = tree.exact_child("device");
+    const auto* device = tree.exact_child("device");
     EXPECT_EQ(&table, device->multi_level_wildcard_payload());
     EXPECT_EQ(device->exact_child("temp"), nullptr);
 }
@@ -254,7 +254,7 @@ TEST_F(trie_test_fixture, a_node_holds_both_an_exact_and_a_multi_level_payload) 
     add(tree, levels({ "device", "#" }), 2);
 
     ASSERT_NE(tree.exact_child("device"), nullptr);
-    const probe_tree* device = tree.exact_child("device");
+    const auto* device = tree.exact_child("device");
     EXPECT_EQ(*device->exact_match_payload(), id_set { 1 });
     EXPECT_EQ(*device->multi_level_wildcard_payload(), id_set { 2 });
 }
@@ -278,12 +278,12 @@ TEST_F(trie_test_fixture, a_repeated_id_is_stored_once) {
 
 TEST_F(trie_test_fixture, a_table_stays_put_while_its_siblings_are_created) {
     probe_tree tree;
-    id_set& held = tree.table_for(levels({ "device", "temp" }));
+    auto& held = tree.table_for(levels({ "device", "temp" }));
     held.insert(1);
 
     // Creating siblings must not move the table: the handle is documented to survive until the subtree
     // changes, and a router keeps exactly this kind of handle across an insert.
-    for (const char* level : { "a", "b", "c", "d", "e", "f", "g", "h" }) { add(tree, levels({ "device", level }), 2); }
+    for (const auto* level : { "a", "b", "c", "d", "e", "f", "g", "h" }) { add(tree, levels({ "device", level }), 2); }
 
     EXPECT_EQ(held, id_set { 1 });
     held.insert(3);
@@ -292,15 +292,15 @@ TEST_F(trie_test_fixture, a_table_stays_put_while_its_siblings_are_created) {
 
 TEST_F(trie_test_fixture, a_table_keeps_its_address_when_it_is_asked_for_twice) {
     probe_tree tree;
-    id_set& first = tree.table_for(levels({ "device", "temp" }));
-    id_set& second = tree.table_for(levels({ "device", "temp" }));
+    auto& first = tree.table_for(levels({ "device", "temp" }));
+    auto& second = tree.table_for(levels({ "device", "temp" }));
 
     EXPECT_EQ(&first, &second);
 }
 
 TEST_F(trie_test_fixture, is_empty_counts_a_child_that_holds_nothing) {
     probe_tree tree;
-    const id_set& created = tree.table_for(levels({ "device" }));
+    const auto& created = tree.table_for(levels({ "device" }));
 
     // Documents an edge that is deliberately inconsistent: an engaged-but-empty table makes the level
     // holding it read as empty while the level above it does not, because `exact_children_` — populated
@@ -359,7 +359,7 @@ TEST_F(trie_test_fixture, update_node_reports_an_empty_path_with_no_payload) {
 TEST_F(trie_test_fixture, update_node_reaches_a_payload_at_an_empty_path) {
     probe_tree tree;
     add(tree, levels({ "device" }), 1);
-    id_set& device = tree.table_for(levels({ "device" }));
+    auto& device = tree.table_for(levels({ "device" }));
     device.clear();
 
     // A table that exists and is empty is still a miss, so an update cannot revive it.
@@ -370,7 +370,7 @@ TEST_F(trie_test_fixture, update_node_reaches_a_payload_at_an_empty_path) {
 
 TEST_F(trie_test_fixture, update_node_can_add_as_well_as_remove) {
     probe_tree tree;
-    id_set& table = tree.table_for(levels({ "device" }));
+    auto& table = tree.table_for(levels({ "device" }));
     EXPECT_TRUE(table.empty());
 
     const auto outcome
@@ -573,7 +573,7 @@ TEST_F(trie_test_fixture, a_moved_tree_keeps_its_payloads) {
     add(source, levels({ "device", "+" }), 1);
     add(source, levels({ "device", "#" }), 2);
 
-    const probe_tree moved(std::move(source));
+    const auto moved(std::move(source));
 
     EXPECT_FALSE(moved.is_empty());
     EXPECT_EQ(*moved.exact_child("device")->multi_level_wildcard_payload(), id_set { 2 });

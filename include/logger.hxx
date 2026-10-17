@@ -108,8 +108,8 @@ inline std::string payload_text(const std::any& payload) {
 ///
 [[nodiscard]]
 inline spdlog::logger& bus_logger() {
-    static const std::shared_ptr<spdlog::logger> instance = [] {
-        std::shared_ptr<spdlog::logger> logger = spdlog::default_logger();
+    static const auto instance = [] {
+        auto logger = spdlog::default_logger();
         logger->set_pattern("%Y-%m-%d %H:%M:%S.%e [%t] %v");
         return logger;
     }();
@@ -146,10 +146,10 @@ inline bool logging_enabled() {
 /// the direction already says sync or async, and repeating it here would be two places to get wrong.
 ///
 inline void bus_log(direction way, std::string_view topic, const std::any& payload, std::string_view note = {}) {
-    spdlog::logger& logger = bus_logger();
+    auto& logger = bus_logger();
     if (!logger.should_log(spdlog::level::info)) { return; }
 
-    std::string tail = payload_text(payload);
+    auto tail = payload_text(payload);
     if (!note.empty()) {
         tail += "  (";
         tail += note;

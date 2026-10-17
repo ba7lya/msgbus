@@ -137,7 +137,7 @@ package "routing" {
   class router <<not copyable>> {
     +subscribe(pattern, callback, options, on_error) : result<subscription, error>
     +unsubscribe(id) : bool
-    +resolve(topic) : vector<delivery>
+    +resolve(topic) : vector<route>
     +{static} deliver(route, msg) : exception_ptr
     +{static} deliver_all(routes, msg) : exception_ptr
     +subscription_count() : size_t
@@ -148,7 +148,7 @@ package "routing" {
     -next_id_ : subscription_id = 1
   }
 
-  struct delivery {
+  struct route {
     +id_ : subscription_id = 0
     +callback_ : handler
     +on_error_ : error_handler
@@ -287,7 +287,7 @@ msgbus *-- dispatcher : dispatcher_
 msgbus o-- executor : worker_ (shared)
 dispatcher o-- executor : executors_
 router o-- matcher : matcher_
-router *-- delivery : resolve() snapshot
+router *-- route : resolve() snapshot
 layer_matcher *-- trie : tree_
 prefix_matcher *-- trie : tree_
 subscription --> subscription_owner : owner_
@@ -298,8 +298,8 @@ msgbus ..> matcher_type : make_matcher()
 msgbus ..> subscription : subscribe()
 router ..> subscription : issues
 router ..> matcher : add / remove / match
-delivery ..> dispatch_options
-dispatcher ..> delivery : dispatch()
+route ..> dispatch_options
+dispatcher ..> route : dispatch()
 msgbus ..> message
 msgbus ..> executor_stats
 trie o-- topic_level : Level

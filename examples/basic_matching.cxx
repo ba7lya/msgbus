@@ -125,9 +125,9 @@ int main() {
     // handler does with `std::any_cast` is the handler's business, and a subscriber that expects a
     // payload of the wrong type is a contract the bus cannot check.
     std::cout << "--- publish_async, two more readings ---\n";
-    for (const std::uint64_t reading : { 23176U, 23177U }) {
+    for (const auto reading : { 23176U, 23177U }) {
         const std::any payload { reading };
-        const publish_status outcome = bus.publish_async(topic_reading, payload);
+        const auto outcome = bus.publish_async(topic_reading, payload);
         bus_log(direction::PUBLISH_ASYNC, topic_reading, payload);
         if (outcome != publish_status::ACCEPTED) {
             std::cerr << "the bus refused the message\n";
@@ -146,7 +146,7 @@ int main() {
     // must part company, or one of the patterns is not doing what its author thought.
     std::cout << "--- summary ---\n";
     std::size_t total = 0;
-    for (const tally& subscriber : { line_reader, site_alarm }) {
+    for (const auto& subscriber : { line_reader, site_alarm }) {
         std::cout << "  " << subscriber.name_ << " saw " << subscriber.topics_.size() << '\n';
         total += subscriber.topics_.size();
     }

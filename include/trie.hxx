@@ -154,8 +154,8 @@ public:
     /// `std::unique_ptr`s, so creating a sibling table cannot move this one.
     [[nodiscard]]
     T& table_for(std::span<const Level> levels) {
-        trie* current = this;
-        for (const Level& level : levels) {
+        auto* current = this;
+        for (const auto& level : levels) {
             if (level.kind() == level_kind::LITERAL) {
                 current = &current->exact_child_or_create(level.text());
                 continue;
@@ -262,8 +262,8 @@ private:
             return true;
         }
 
-        const Level& current_level = path.front();
-        const std::span<const Level> rest = path.subspan(1);
+        const auto& current_level = path.front();
+        const auto rest = path.subspan(1);
 
         if (current_level.kind() == level_kind::LITERAL) {
             const auto child = exact_children_.find(current_level.text());

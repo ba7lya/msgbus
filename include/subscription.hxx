@@ -125,7 +125,7 @@ public:
         if (owner_ == nullptr) { return false; }
         // Emptied whether or not the id was still live: after this call the handle owns nothing, so
         // its destructor and a second `cancel` are both no-ops.
-        const bool was_live = owner_->unsubscribe(id_);
+        const auto was_live = owner_->unsubscribe(id_);
         owner_ = nullptr;
         id_ = 0;
         return was_live;

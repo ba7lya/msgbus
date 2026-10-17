@@ -90,7 +90,7 @@ public:
         const std::scoped_lock guard(mutex_);
         std::vector<std::string> out;
         out.reserve(received_.size());
-        for (const receipt& entry : received_) { out.push_back(entry.tag); }
+        for (const auto& entry : received_) { out.push_back(entry.tag); }
         std::ranges::sort(out);
         return out;
     }
@@ -107,7 +107,7 @@ public:
     bool all_on_one_thread_other_than(std::thread::id other) const {
         const std::scoped_lock guard(mutex_);
         if (received_.empty()) { return false; }
-        for (const receipt& entry : received_) {
+        for (const auto& entry : received_) {
             if (entry.thread != received_.front().thread || entry.thread == other) { return false; }
         }
         return true;
@@ -242,8 +242,8 @@ public:
         EXPECT_TRUE(registered.has_value()) << "on " << pattern;
         if (!registered.has_value()) { return 0; }
 
-        subscription handle = *std::move(registered);
-        const subscription_id id = handle.id();
+        auto handle = *std::move(registered);
+        const auto id = handle.id();
         handles_.push_back(std::move(handle));
         return id;
     }
@@ -861,7 +861,7 @@ TEST(msgbus_test, flush_from_the_routing_worker_throws) {
 
     ASSERT_TRUE(reported.load(std::memory_order_acquire))
         << "the throw must have reached the subscription's error handler";
-    const std::exception_ptr cause = failure;
+    const auto cause = failure;
     try {
         std::rethrow_exception(cause);
         ADD_FAILURE() << "expected std::invalid_argument";
@@ -888,7 +888,7 @@ TEST(msgbus_test, a_handler_named_by_dispatch_options_runs_on_that_executors_thr
     EXPECT_TRUE(bus.executors().find(7)->drain());
     EXPECT_TRUE(bus.flush());
 
-    const std::thread::id caller = std::this_thread::get_id();
+    const auto caller = std::this_thread::get_id();
     ASSERT_EQ(on_executor.count(), 1u);
     ASSERT_EQ(on_router.count(), 1u);
     EXPECT_NE(on_executor.thread_of_first(), caller);
@@ -1131,7 +1131,7 @@ TEST(msgbus_test, routed_counts_every_message_the_worker_finished) {
 
     EXPECT_EQ(received.count(), 100u);
     EXPECT_EQ(bus.routed(), 100u);
-    const executor_stats stats = bus.worker_stats();
+    const auto stats = bus.worker_stats();
     EXPECT_EQ(stats.submitted_, 100u);
     EXPECT_EQ(stats.completed_, 100u);
     EXPECT_EQ(stats.failed_, 0u);
@@ -1154,7 +1154,7 @@ TEST(msgbus_test, subscription_count_and_empty_track_registration) {
     recorder received;
 
     ASSERT_TRUE(bus.empty());
-    const subscription_id id = armed.add(bus, "a/b", received.callback());
+    const auto id = armed.add(bus, "a/b", received.callback());
     EXPECT_EQ(bus.subscription_count(), 1u);
     EXPECT_FALSE(bus.empty());
 
@@ -1170,7 +1170,7 @@ TEST(msgbus_test, an_unsubscribed_id_still_holds_a_second_pattern_of_its_own) {
     msgbus bus;
     registrations armed;
     recorder received;
-    const subscription_id id = armed.add(bus, "a/#", received.callback());
+    const auto id = armed.add(bus, "a/#", received.callback());
 
     bus.publish_sync("a/b", std::any { 1 });
     EXPECT_TRUE(bus.unsubscribe(id));
@@ -1188,7 +1188,7 @@ TEST(msgbus_test, a_cancelled_subscription_does_not_see_a_message_queued_before_
     gate g;
     armed.add(bus, "gate", [&g](const message&) { g.hold(); }, dispatch_options { msgbus::ROUTER });
     recorder received;
-    const subscription_id id = armed.add(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
+    const auto id = armed.add(bus, "a/b", received.callback(), dispatch_options { msgbus::ROUTER });
 
     EXPECT_EQ(bus.publish_async("gate", std::any { 1 }), publish_status::ACCEPTED);
     g.wait_entered();
@@ -1328,7 +1328,7 @@ TEST(msgbus_test, concurrent_synchronous_publishers_are_all_routed) {
             for (int i = 0; i < PER_THREAD; ++i) { bus.publish_sync("a/b", std::any { i }); }
         });
     }
-    for (std::thread& publisher : publishers) { publisher.join(); }
+    for (auto& publisher : publishers) { publisher.join(); }
 
     EXPECT_EQ(received.count(), static_cast<std::size_t>(THREADS) * PER_THREAD);
     EXPECT_EQ(bus.routed(), static_cast<std::uint64_t>(THREADS) * PER_THREAD);
@@ -1349,7 +1349,7 @@ TEST(msgbus_test, concurrent_asynchronous_publishers_are_all_routed) {
             for (int i = 0; i < PER_THREAD; ++i) { sink(bus.publish_async("a/b", std::any { i })); }
         });
     }
-    for (std::thread& publisher : publishers) { publisher.join(); }
+    for (auto& publisher : publishers) { publisher.join(); }
 
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 5000 }));
     EXPECT_EQ(received.count(), static_cast<std::size_t>(THREADS) * PER_THREAD);
@@ -1445,7 +1445,7 @@ TEST(msgbus_test, concurrent_subscribe_and_unsubscribe_keep_the_count_coherent) 
             }
         });
     }
-    for (std::thread& worker : workers) { worker.join(); }
+    for (auto& worker : workers) { worker.join(); }
 
     EXPECT_FALSE(failed.load());
     EXPECT_EQ(bus.subscription_count(), 0u);

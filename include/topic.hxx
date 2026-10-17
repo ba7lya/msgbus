@@ -127,14 +127,14 @@ struct topic_path {
     std::vector<std::string_view> texts() const {
         std::vector<std::string_view> spellings;
         spellings.reserve(levels_.size());
-        for (const topic_level& level : levels_) { spellings.push_back(level.text()); }
+        for (const auto& level : levels_) { spellings.push_back(level.text()); }
         return spellings;
     }
 
     /// @brief Whether every level is a literal, which a published topic requires and a pattern need not be.
     [[nodiscard]]
     bool all_literal() const noexcept {
-        for (const topic_level& level : levels_) {
+        for (const auto& level : levels_) {
             if (!level.is_literal()) { return false; }
         }
         return true;
@@ -144,7 +144,7 @@ struct topic_path {
     [[nodiscard]]
     std::string spell() const {
         std::string out;
-        for (const topic_level& level : levels_) {
+        for (const auto& level : levels_) {
             if (!out.empty()) { out += '/'; }
             out += level.text();
         }
@@ -173,9 +173,9 @@ inline result<topic_path, error> parse_topic_levels(std::string_view text, bool 
     topic_path path;
     std::size_t start = 0;
     while (true) {
-        const std::size_t separator = text.find('/', start);
-        const std::size_t end = separator == std::string_view::npos ? text.size() : separator;
-        const std::string_view level = text.substr(start, end - start);
+        const auto separator = text.find('/', start);
+        const auto end = separator == std::string_view::npos ? text.size() : separator;
+        const auto level = text.substr(start, end - start);
 
         if (level.empty()) { return std::unexpected(error::make(error_code::EMPTY_LEVEL, text, start)); }
 
@@ -192,7 +192,7 @@ inline result<topic_path, error> parse_topic_levels(std::string_view text, bool 
         }
         else {
             for (std::size_t at = start; at < end; ++at) {
-                const char character = text[at];
+                const auto character = text[at];
                 if (character == '+' || character == '#') {
                     return std::unexpected(error::make(error_code::INVALID_WILDCARD, text, at));
                 }

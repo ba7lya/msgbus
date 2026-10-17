@@ -97,7 +97,7 @@ public:
         const auto held = by_subscription_.find(id);
         if (held == by_subscription_.end()) { return false; }
 
-        for (const topic_path& path : held->second) {
+        for (const auto& path : held->second) {
             const auto pruned = tree_.update_node(path.levels(), [id](subscription_set& ids) { ids.erase(id); });
             // A miss means the pattern is not in the trie, which would be an invariant broken rather than a
             // case to handle: the only way out of the trie is this loop, which also drops the pattern from
@@ -140,8 +140,8 @@ public:
     /// traversed, so a path spelling one finds nothing.
     [[nodiscard]]
     const subscription_set* payload_at(std::span<const topic_level> path) const {
-        const trie<subscription_set, topic_level>* node = &tree_;
-        for (const topic_level& level : path) {
+        const auto* node = &tree_;
+        for (const auto& level : path) {
             if (!level.is_literal()) { return nullptr; }
             node = node->exact_child(level.text());
             if (node == nullptr) { return nullptr; }
@@ -189,22 +189,16 @@ private:
     ) const {
         // A `#` at this node covers this level and every level below it, so it contributes wherever the
         // walk is, including where it stops.
-        if (const subscription_set* multi = node->multi_level_wildcard_payload()) {
-            matched.insert(multi->begin(), multi->end());
-        }
+        if (const auto* multi = node->multi_level_wildcard_payload()) { matched.insert(multi->begin(), multi->end()); }
 
         if (levels.empty()) {
-            if (const subscription_set* exact = node->exact_match_payload()) {
-                matched.insert(exact->begin(), exact->end());
-            }
+            if (const auto* exact = node->exact_match_payload()) { matched.insert(exact->begin(), exact->end()); }
             return;
         }
 
         // A published topic is all literals by the grammar, so a level names at most one branch.
-        if (const trie<subscription_set, topic_level>* exact = node->exact_child(levels.front())) {
-            match_into(exact, levels.subspan(1), matched);
-        }
-        if (const trie<subscription_set, topic_level>* wildcard = node->single_level_wildcard_child()) {
+        if (const auto* exact = node->exact_child(levels.front())) { match_into(exact, levels.subspan(1), matched); }
+        if (const auto* wildcard = node->single_level_wildcard_child()) {
             match_into(wildcard, levels.subspan(1), matched);
         }
     }

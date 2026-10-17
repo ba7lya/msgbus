@@ -251,7 +251,7 @@ BENCHMARK(bm_publish_sync_no_match)->Arg(1)->Arg(64)->Arg(512)->Unit(::benchmark
 static void bm_publish_sync_depth(::benchmark::State& state) {
     msgbus bus;
     std::vector<subscription> armed;
-    const std::int64_t depth = state.range(0);
+    const auto depth = state.range(0);
     for (std::int64_t level = 1; level <= depth; ++level) {
         if (!add_inline_subscriptions(bus, pattern_for_depth(static_cast<std::size_t>(level)), 1, armed)) {
             state.SkipWithError("the benchmark's own subscription pattern was rejected");
@@ -281,7 +281,7 @@ static void bm_publish_async_round_trip(::benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        const publish_status outcome = bus.publish_async(k_device_topic, sample_payload(1));
+        const auto outcome = bus.publish_async(k_device_topic, sample_payload(1));
         if (outcome != publish_status::ACCEPTED) {
             state.SkipWithError("the routing queue refused a message");
             return;

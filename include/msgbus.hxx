@@ -96,7 +96,7 @@ public:
         , worker_(std::make_shared<executor>(queue_capacity, [this](std::exception_ptr failure) {
             report(std::move(failure));
         })) {
-        const bool registered = dispatcher_.add(ROUTER, worker_);
+        const auto registered = dispatcher_.add(ROUTER, worker_);
         // Nothing else has run yet, so the only way this fails is a bug in the class itself.
         if (!registered) { throw std::logic_error("the routing worker's id is already taken"); }
     }
@@ -122,7 +122,7 @@ public:
         , worker_(std::make_shared<executor>(queue_capacity, [this](std::exception_ptr failure) {
             report(std::move(failure));
         })) {
-        const bool registered = dispatcher_.add(ROUTER, worker_);
+        const auto registered = dispatcher_.add(ROUTER, worker_);
         if (!registered) { throw std::logic_error("the routing worker's id is already taken"); }
     }
 
@@ -173,7 +173,7 @@ public:
     /// for the calling thread's work alone, as a `publish_sync` must if it is to stay usable from inside
     /// a handler.
     void publish_sync(message msg) override {
-        std::shared_ptr<const message> shared = std::make_shared<const message>(std::move(msg));
+        auto shared = std::make_shared<const message>(std::move(msg));
         deliver_now(shared);
     }
 
@@ -198,9 +198,9 @@ public:
         // captured here, so a `BLOCK` submit waits — on a message it has not yet had to allocate, and on
         // a closure it has not yet had to build — and there is no path where a closure is built and then
         // has to be unwound because the submit was refused.
-        const submit_status outcome = worker_->submit_deferred(
+        const auto outcome = worker_->submit_deferred(
             [this, msg = std::move(msg)]() -> work_item {
-                const std::shared_ptr<const message> shared = std::make_shared<const message>(std::move(msg));
+                const auto shared = std::make_shared<const message>(std::move(msg));
                 return [this, shared] { deliver_now(shared); };
             },
             policy_
@@ -312,7 +312,7 @@ public:
         // between them nothing can be submitted — a publisher that raced the first would otherwise be
         // parked on a queue whose worker has already been told to stop.
         worker_->close();
-        const bool quiescent = worker_->drain();
+        const auto quiescent = worker_->drain();
         static_cast<void>(quiescent);
         worker_->release();
         dispatcher_.release();
@@ -343,13 +343,12 @@ private:
             );
         }
 
-        const std::vector<delivery> routes = router_.resolve(parsed->levels());
+        const auto routes = router_.resolve(parsed->levels());
         // The dispatcher's own error handler is this bus's channel: by the time it is called, every
         // remaining caller has returned.
-        const std::exception_ptr failure
-            = dispatcher_.dispatch(routes, msg, [this](const message&, std::exception_ptr cause) {
-                  report(std::move(cause));
-              });
+        const auto failure = dispatcher_.dispatch(routes, msg, [this](const message&, std::exception_ptr cause) {
+            report(std::move(cause));
+        });
         if (failure) { std::rethrow_exception(failure); }
         static_cast<void>(routed_.fetch_add(1, std::memory_order_relaxed));
     }

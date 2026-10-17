@@ -28,7 +28,7 @@ namespace {
 [[nodiscard]]
 std::vector<std::string> spellings(const topic_path& path) {
     std::vector<std::string> out;
-    for (const topic_level& level : path.levels_) { out.emplace_back(level.text()); }
+    for (const auto& level : path.levels_) { out.emplace_back(level.text()); }
     return out;
 }
 
@@ -200,7 +200,7 @@ TEST(parse_test, a_path_round_trips_through_its_levels) {
     const auto parsed = parse_pattern("device/+/#");
 
     ASSERT_TRUE(parsed.has_value());
-    const topic_path rebuilt = topic_path::from_levels(parsed.value().levels());
+    const auto rebuilt = topic_path::from_levels(parsed.value().levels());
     EXPECT_EQ(rebuilt, parsed.value());
     EXPECT_EQ(rebuilt.spell(), "device/+/#");
 }
@@ -329,7 +329,7 @@ TEST(match_test, a_subscriber_reached_by_two_patterns_is_matched_once) {
 
 TEST(match_test, a_subscriber_reached_by_many_patterns_is_matched_once) {
     layer_matcher matcher;
-    for (const char* pattern : { "#", "a/#", "a/+/+", "a/b/+", "a/+/c", "a/b/c" }) { subscribe(matcher, pattern, 1); }
+    for (const auto* pattern : { "#", "a/#", "a/+/+", "a/b/+", "a/+/c", "a/b/c" }) { subscribe(matcher, pattern, 1); }
 
     const auto matched = matcher.match_topic("a/b/c");
 
@@ -361,7 +361,7 @@ TEST(match_test, matching_a_topic_that_is_not_a_topic_fails) {
     layer_matcher matcher;
     subscribe(matcher, "device/#", 1);
 
-    for (const char* bad : { "", "/device", "device/", "device/+/temp", "device//temp", "device/te mp" }) {
+    for (const auto* bad : { "", "/device", "device/", "device/+/temp", "device//temp", "device/te mp" }) {
         EXPECT_FALSE(matcher.match_topic(bad).has_value()) << "on " << bad;
     }
 }

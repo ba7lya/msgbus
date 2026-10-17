@@ -46,7 +46,7 @@ public:
         if (!callback) { throw std::invalid_argument("the handler must not be empty"); }
         if (reject) { return std::unexpected(error::make(error_code::EMPTY_LEVEL, pattern)); }
 
-        const subscription_id id = next_id++;
+        const auto id = next_id++;
         seen.push_back(registration { std::string(pattern), options, static_cast<bool>(on_error) });
         live.push_back(id);
         return subscription(*this, id);
@@ -116,8 +116,8 @@ TEST(subscriber_test, subscribing_returns_the_id_the_bus_issued) {
     registering_bus bus;
     subscriber listener(bus);
 
-    const result<subscription_id, error> first = listener.subscribe("a/b", noop());
-    const result<subscription_id, error> second = listener.subscribe("a/c", noop());
+    const auto first = listener.subscribe("a/b", noop());
+    const auto second = listener.subscribe("a/c", noop());
 
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
@@ -168,7 +168,7 @@ TEST(subscriber_test, a_rejected_pattern_registers_nothing_and_is_reported) {
     subscriber listener(bus);
     bus.reject = true;
 
-    const result<subscription_id, error> added = listener.subscribe("a//b", noop());
+    const auto added = listener.subscribe("a//b", noop());
 
     ASSERT_FALSE(added.has_value());
     EXPECT_EQ(added.error().code_, error_code::EMPTY_LEVEL);
@@ -181,8 +181,8 @@ TEST(subscriber_test, a_rejected_pattern_registers_nothing_and_is_reported) {
 TEST(subscriber_test, cancelling_one_id_cancels_only_that_registration) {
     registering_bus bus;
     subscriber listener(bus);
-    const subscription_id first = listener.subscribe("a", noop()).value();
-    const subscription_id second = listener.subscribe("b", noop()).value();
+    const auto first = listener.subscribe("a", noop()).value();
+    const auto second = listener.subscribe("b", noop()).value();
 
     EXPECT_TRUE(listener.cancel(first));
 
@@ -196,7 +196,7 @@ TEST(subscriber_test, cancelling_one_id_cancels_only_that_registration) {
 TEST(subscriber_test, cancelling_is_idempotent) {
     registering_bus bus;
     subscriber listener(bus);
-    const subscription_id id = listener.subscribe("a", noop()).value();
+    const auto id = listener.subscribe("a", noop()).value();
 
     EXPECT_TRUE(listener.cancel(id));
     EXPECT_FALSE(listener.cancel(id)) << "the second cancel has nothing left to cancel";
@@ -209,7 +209,7 @@ TEST(subscriber_test, an_id_this_subscriber_does_not_own_is_refused) {
     registering_bus bus;
     subscriber first(bus);
     subscriber second(bus);
-    const subscription_id id = second.subscribe("a", noop()).value();
+    const auto id = second.subscribe("a", noop()).value();
 
     EXPECT_FALSE(first.cancel(id));
     EXPECT_TRUE(second.contains(id));
@@ -246,7 +246,7 @@ TEST(subscriber_test, cancelling_all_leaves_the_subscriber_empty_and_reusable) {
 TEST(subscriber_test, moving_hands_the_registrations_over_without_cancelling_them) {
     registering_bus bus;
     subscriber source(bus);
-    const subscription_id id = source.subscribe("a", noop()).value();
+    const auto id = source.subscribe("a", noop()).value();
 
     subscriber destination(std::move(source));
 
@@ -259,9 +259,9 @@ TEST(subscriber_test, moving_hands_the_registrations_over_without_cancelling_the
 TEST(subscriber_test, move_assignment_cancels_what_the_destination_held_first) {
     registering_bus bus;
     subscriber source(bus);
-    const subscription_id kept = source.subscribe("a", noop()).value();
+    const auto kept = source.subscribe("a", noop()).value();
     subscriber destination(bus);
-    const subscription_id dropped = destination.subscribe("b", noop()).value();
+    const auto dropped = destination.subscribe("b", noop()).value();
 
     destination = std::move(source);
 

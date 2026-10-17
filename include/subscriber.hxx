@@ -114,11 +114,10 @@ public:
     result<subscription_id, error> subscribe(
         std::string_view pattern, handler handler, dispatch_options options, error_handler on_error
     ) {
-        result<subscription, error> registered
-            = bus_.subscribe(pattern, std::move(handler), options, std::move(on_error));
+        auto registered = bus_.subscribe(pattern, std::move(handler), options, std::move(on_error));
         if (!registered) { return std::unexpected(registered.error()); }
 
-        const subscription_id id = registered->id();
+        const auto id = registered->id();
         handles_.push_back(std::move(*registered));
         return id;
     }
@@ -134,7 +133,7 @@ public:
     bool cancel(subscription_id id) {
         for (auto it = handles_.begin(); it != handles_.end(); ++it) {
             if (*it == id) {
-                const bool was_live = it->cancel();
+                const auto was_live = it->cancel();
                 handles_.erase(it);
                 return was_live;
             }
@@ -160,7 +159,7 @@ public:
     /// @brief Whether `id` is one of this subscriber's registrations.
     [[nodiscard]]
     bool contains(subscription_id id) const noexcept {
-        for (const subscription& handle : handles_) {
+        for (const auto& handle : handles_) {
             if (handle == id) { return true; }
         }
         return false;

@@ -31,26 +31,11 @@
 #include "layer_matcher.hxx"
 #include "matcher.hxx"
 #include "message.hxx"
+#include "route.hxx"
 #include "subscription.hxx"
 #include "topic.hxx"
 
 namespace ba7lya::msgbus {
-
-///
-/// @brief One subscription a message resolved to: what to run, what to do when it throws, and where.
-/// @details A copy of what the registration held at the moment the snapshot was taken. That is why a
-/// subscription cancelled after the snapshot still runs: see `router::resolve`.
-///
-struct delivery {
-    /// @brief The subscription this route came from. Diagnostic: the callback is already bound.
-    subscription_id id_ = 0;
-    /// @brief The subscriber's handler, copied out of the table.
-    handler callback_;
-    /// @brief Where this handler's exception goes; empty returns it to `deliver`'s caller.
-    error_handler on_error_;
-    /// @brief Which executor should run this handler, and what to do when it falls behind.
-    dispatch_options options_;
-};
 
 ///
 /// @brief Owns the subscriptions and turns a topic into the list of handlers that match it.
@@ -113,9 +98,9 @@ public:
     ) {
         if (!callback) { throw std::invalid_argument("the handler must not be empty"); }
 
-        const std::unique_lock lock(mutex_);
+        const std::unique_lock<std::shared_mutex> lock(mutex_);
 
-        const subscription_id id = next_id_;
+        const auto id = next_id_;
         const auto added = matcher_->add(pattern, id);
         if (!added) { return std::unexpected(added.error()); }
 
@@ -135,13 +120,13 @@ public:
     /// @note An id is never reissued, so a stale id can only fail to match.
     [[nodiscard]]
     bool unsubscribe(subscription_id id) override {
-        const std::unique_lock lock(mutex_);
+        const std::unique_lock<std::shared_mutex> lock(mutex_);
 
         const auto live = handlers_.find(id);
         if (live == handlers_.end()) { return false; }
         handlers_.erase(live);
 
-        const bool pruned = matcher_->remove(id);
+        const auto pruned = matcher_->remove(id);
         // Both tables move under the one lock, so a live handler without patterns is a broken
         // invariant rather than a case to handle.
         assert(pruned && "a live handler without a pattern is an invariant broken");
@@ -156,42 +141,42 @@ public:
     /// `parse_topic` from `topic.hxx`.
     /// @details The snapshot is taken under the shared lock and the lock is released before
     /// returning, which is what lets a handler register or cancel from inside a delivery.
-    /// @note A subscription cancelled after this returns is still delivered: the `delivery` holds its
+    /// @note A subscription cancelled after this returns is still delivered: the `route` holds its
     /// own copy of the callback. The window is deliberate — re-checking liveness per delivery would
     /// cost a second lock acquisition on the hot path to close a race the contract does not name.
     /// @note The order is unspecified — the matches arrive in a `std::unordered_set` — so a caller
     /// must not read meaning into it.
     [[nodiscard]]
-    std::vector<delivery> resolve(std::span<const topic_level> topic) const {
+    std::vector<route> resolve(std::span<const topic_level> topic) const {
         std::vector<std::string_view> levels;
         levels.reserve(topic.size());
-        for (const topic_level& level : topic) {
+        for (const auto& level : topic) {
             // A published topic is all literals by the grammar, so the level kind carries no meaning here.
             assert(level.is_literal() && "a published topic level is never a wildcard");
             levels.push_back(level.text());
         }
 
-        const std::shared_lock lock(mutex_);
+        const std::shared_lock<std::shared_mutex> lock(mutex_);
 
-        const subscription_set matched = matcher_->match(levels);
+        const auto matched = matcher_->match(levels);
 
-        std::vector<delivery> routes;
+        std::vector<route> routes;
         routes.reserve(matched.size());
-        for (const subscription_id id : matched) {
+        for (const auto id : matched) {
             const auto found = handlers_.find(id);
             // Both tables are read under the one lock, so they cannot disagree.
             assert(found != handlers_.end() && "the matcher and the handler table disagree");
             if (found == handlers_.end()) { continue; }
-            routes.push_back(delivery { id, found->second.callback_, found->second.on_error_, found->second.options_ });
+            routes.push_back(route { id, found->second.callback_, found->second.on_error_, found->second.options_ });
         }
         return routes;
     }
 
     /// @brief Runs one route, isolating whatever it throws.
-    /// @param route the subscription to run
+    /// @param edge the subscription to run
     /// @param msg the message it is handed
     /// @return the exception the callback threw and no error handler consumed, or null when the
-    /// delivery completed — or when `route.on_error_` took the failure
+    /// delivery completed — or when `edge.on_error_` took the failure
     /// @details A throw with an error handler set is fully consumed here: it neither skips the
     /// sibling subscriptions nor reaches the caller. A throw without one is returned, and the
     /// siblings are still delivered either way.
@@ -200,12 +185,12 @@ public:
     /// @note Static because it touches no router state, and must not: a worker thread running this
     /// holds no lock, which is the whole point of resolving to a snapshot first.
     [[nodiscard]]
-    static std::exception_ptr deliver(const delivery& route, const message& msg) {
+    static std::exception_ptr deliver(const route& route, const message& msg) {
         try {
             route.callback_(msg);
         }
         catch (...) {
-            const std::exception_ptr failure = std::current_exception();
+            const auto failure = std::current_exception();
             if (!route.on_error_) { return failure; }
             try {
                 route.on_error_(msg, failure);
@@ -224,10 +209,10 @@ public:
     /// @note It reports only the deliveries that ran on the calling thread. A route whose executor is
     /// another thread is that thread's to run, and its failures are that thread's to report.
     [[nodiscard]]
-    static std::exception_ptr deliver_all(std::span<const delivery> routes, const message& msg) {
+    static std::exception_ptr deliver_all(std::span<const route> routes, const message& msg) {
         std::exception_ptr first;
-        for (const delivery& route : routes) {
-            if (const std::exception_ptr failure = deliver(route, msg); failure && !first) { first = failure; }
+        for (const auto& edge : routes) {
+            if (const auto failure = deliver(edge, msg); failure && !first) { first = failure; }
         }
         return first;
     }
@@ -235,14 +220,14 @@ public:
     /// @brief How many subscriptions are live.
     [[nodiscard]]
     std::size_t subscription_count() const noexcept {
-        const std::shared_lock lock(mutex_);
+        const std::shared_lock<std::shared_mutex> lock(mutex_);
         return handlers_.size();
     }
 
     /// @brief Whether any subscription is live.
     [[nodiscard]]
     bool empty() const noexcept {
-        const std::shared_lock lock(mutex_);
+        const std::shared_lock<std::shared_mutex> lock(mutex_);
         return handlers_.empty();
     }
 
@@ -256,8 +241,8 @@ private:
         dispatch_options options_;
     };
 
-    /// @brief Guards both tables below. Exclusive for a registration or a cancellation, shared for a
-    /// resolution.
+    /// @brief Guards both tables below.
+    /// Exclusive for a registration or a cancellation, shared for a resolution.
     mutable std::shared_mutex mutex_;
     /// @brief The matcher, and which subscriptions each pattern holds.
     std::unique_ptr<matcher> matcher_;

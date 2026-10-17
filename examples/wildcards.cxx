@@ -169,8 +169,8 @@ int main() {
     std::size_t total = 0;
     for (const auto& [subscriber, pattern] : armed) {
         std::cout << "  " << subscriber->pattern_ << '\n';
-        for (const topic& name : topics) {
-            const bool heard
+        for (const auto& name : topics) {
+            const auto heard
                 = std::find(subscriber->topics_.begin(), subscriber->topics_.end(), name) != subscriber->topics_.end();
             std::cout << "    " << (heard ? "hit " : "  - ") << "  " << name << '\n';
         }
@@ -184,9 +184,9 @@ int main() {
     // probed reach is a pattern that means something other than its author thought.
     std::cout << "\n--- verify ---\n";
     msgbus probe; // the probe's own bus: its publishes must not reach the subscribers above
-    bool agreed = true;
+    auto agreed = true;
     for (const auto& [subscriber, pattern] : armed) {
-        const std::size_t reached = count_reach(probe, pattern);
+        const auto reached = count_reach(probe, pattern);
         if (reached != subscriber->topics_.size()) {
             std::cerr << "  " << pattern << ": saw " << subscriber->topics_.size() << " deliveries above but reaches "
                       << reached << " of the three topics\n";

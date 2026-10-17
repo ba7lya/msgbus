@@ -94,7 +94,7 @@ public:
         const auto held = by_subscription_.find(id);
         if (held == by_subscription_.end()) { return false; }
 
-        for (const topic_path& path : held->second) {
+        for (const auto& path : held->second) {
             const auto pruned = tree_.update_node(path.levels(), [id](subscription_set& ids) { ids.erase(id); });
             assert(pruned.has_value() && "a registered prefix is missing from the trie");
             static_cast<void>(pruned);
@@ -124,18 +124,14 @@ public:
     [[nodiscard]]
     subscription_set match(std::span<const std::string_view> levels) const override {
         subscription_set matched;
-        const trie<subscription_set, topic_level>* node = &tree_;
-        for (const std::string_view level : levels) {
-            if (const subscription_set* prefix = node->exact_match_payload()) {
-                matched.insert(prefix->begin(), prefix->end());
-            }
+        const auto* node = &tree_;
+        for (const auto level : levels) {
+            if (const auto* prefix = node->exact_match_payload()) { matched.insert(prefix->begin(), prefix->end()); }
             node = node->exact_child(level);
             if (node == nullptr) { return matched; }
         }
         // The walk has consumed every level, so a prefix ending exactly here still covers the topic.
-        if (const subscription_set* prefix = node->exact_match_payload()) {
-            matched.insert(prefix->begin(), prefix->end());
-        }
+        if (const auto* prefix = node->exact_match_payload()) { matched.insert(prefix->begin(), prefix->end()); }
         return matched;
     }
 
@@ -143,8 +139,8 @@ public:
     /// @return the ids stored at that node, or null when the walk cannot get there
     [[nodiscard]]
     const subscription_set* payload_at(std::span<const topic_level> path) const {
-        const trie<subscription_set, topic_level>* node = &tree_;
-        for (const topic_level& level : path) {
+        const auto* node = &tree_;
+        for (const auto& level : path) {
             if (!level.is_literal()) { return nullptr; }
             node = node->exact_child(level.text());
             if (node == nullptr) { return nullptr; }

@@ -187,14 +187,14 @@ bool run_sequence(msgbus& bus, ledger& reader) {
     // Nothing is parked yet, so returning here leaves no one waiting.
     if (!gated || !readings) { return false; }
 
-    bool queued = true;
+    auto queued = true;
     {
         const gate_latch open_at_scope_end { gate };
 
         queued = bus.publish_async(topic_gate, std::any { std::uint64_t { 0 } }) == publish_status::ACCEPTED;
         if (queued) { entered.acquire(); }
 
-        for (const std::uint64_t reading : backlog) {
+        for (const auto reading : backlog) {
             if (!queued) { break; }
             queued = bus.publish_async(topic_readings, std::any { reading }) == publish_status::ACCEPTED;
         }
@@ -206,7 +206,7 @@ bool run_sequence(msgbus& bus, ledger& reader) {
     // backlog was queued for `readings`, and a subscription is resolved when the worker reaches each
     // message rather than when it was published -- and the semaphores have to stay alive until the
     // worker has left `gate.acquire()`, which is what the flush makes true.
-    const bool drained = bus.flush(std::chrono::milliseconds { 2000 });
+    const auto drained = bus.flush(std::chrono::milliseconds { 2000 });
     return queued && drained;
 }
 
@@ -215,7 +215,7 @@ bool run_sequence(msgbus& bus, ledger& reader) {
 int main() {
     using namespace ba7lya::msgbus;
 
-    const std::thread::id main_thread = std::this_thread::get_id();
+    const auto main_thread = std::this_thread::get_id();
 
     // Declared **before** the bus, so they are destroyed **after** it.
     //
@@ -257,7 +257,7 @@ int main() {
         return true;
     };
 
-    const bool all_armed
+    const auto all_armed
         = arm(topic_gate,
               [&entered, &gate](const message&) {
                   // Parks the routing worker until the gate opens. `entered` tells
@@ -296,7 +296,7 @@ int main() {
 
         std::cout << "--- block the routing worker ---\n";
         const std::any marker { std::uint64_t { 0 } };
-        const publish_status gated_status = bus.publish_async(topic_gate, marker);
+        const auto gated_status = bus.publish_async(topic_gate, marker);
         bus_log(direction::PUBLISH_ASYNC, topic_gate, marker);
         ++async_published;
         if (gated_status != publish_status::ACCEPTED) {
@@ -308,9 +308,9 @@ int main() {
                   << "  routed so far: " << bus.routed() << " -- the worker has not finished the message it holds\n\n";
 
         std::cout << "--- an async backlog the worker cannot reach ---\n";
-        for (const std::uint64_t reading : backlog) {
+        for (const auto reading : backlog) {
             const std::any payload { reading };
-            const publish_status outcome = bus.publish_async(topic_readings, payload);
+            const auto outcome = bus.publish_async(topic_readings, payload);
             bus_log(direction::PUBLISH_ASYNC, topic_readings, payload);
             ++async_published;
             if (outcome != publish_status::ACCEPTED) {
@@ -326,7 +326,7 @@ int main() {
         bus_log(direction::PUBLISH_SYNC, topic_readings, cutting);
         bus.publish_sync(topic_readings, cutting);
         ++sync_published;
-        const std::vector<std::uint64_t> parked = reader.order();
+        const auto parked = reader.order();
         std::cout << "  publish_sync did not join the worker's queue: it routed here, on this thread\n"
                   << "  the reader has recorded " << render_order(parked) << " while the backlog is still waiting\n\n";
     }
@@ -335,14 +335,14 @@ int main() {
     // the order it was queued -- and the queue is not empty until it has, so this is a complete
     // barrier for everything above. It is one because every subscription here is inline: the handler
     // runs inside the work item, so `!running_` means "and the handler returned".
-    const bool drained_ordering = bus.flush(std::chrono::milliseconds { 2000 });
-    const std::size_t routed_after_ordering = bus.routed();
-    const executor_stats worker_after_ordering = bus.worker_stats();
-    const std::size_t sink_after_ordering = sink_calls.load();
+    const auto drained_ordering = bus.flush(std::chrono::milliseconds { 2000 });
+    const auto routed_after_ordering = bus.routed();
+    const auto worker_after_ordering = bus.worker_stats();
+    const auto sink_after_ordering = sink_calls.load();
     // What this section published, so the verification below compares against the counters as they
     // stood here rather than against the totals the failures section adds to afterwards.
-    const std::size_t async_after_ordering = async_published;
-    const std::size_t sync_after_ordering = sync_published;
+    const auto async_after_ordering = async_published;
+    const auto sync_after_ordering = sync_published;
 
     std::cout << "--- release the gate: the backlog arrives, in order ---\n"
               << "  the reader has recorded " << render_order(reader.order()) << '\n'
@@ -362,9 +362,9 @@ int main() {
     // above, so `router::deliver` returns the failure rather than consuming it, the dispatcher returns
     // it in turn, and `deliver_now` rethrows it -- on this thread, which means it travels all the way
     // out of `publish_sync` and lands in the `catch` below.
-    bool caught = false;
+    auto caught = false;
     std::size_t expected_routed = 0;
-    const std::size_t routed_before_failures = bus.routed();
+    const auto routed_before_failures = bus.routed();
     try {
         bus_log(direction::PUBLISH_SYNC, topic_throwing, failing);
         bus.publish_sync(topic_throwing, failing);
@@ -379,7 +379,7 @@ int main() {
     // catches whatever escapes one and hands it to the bus's own sink, which is the `on_exception`
     // role built at the top. That sink is the channel for a failure with no caller left, and this is
     // the only publish here that reaches it.
-    const publish_status throwing_status = bus.publish_async(topic_throwing, failing);
+    const auto throwing_status = bus.publish_async(topic_throwing, failing);
     bus_log(direction::PUBLISH_ASYNC, topic_throwing, failing);
     ++async_published;
     if (throwing_status != publish_status::ACCEPTED) {
@@ -390,13 +390,13 @@ int main() {
     // A subscriber that supplies its own `error_handler` keeps the failure to itself on either path:
     // `router::deliver` calls it and returns null, so nothing propagates to a publisher, the bus's
     // sink is not reached either, and the message counts as routed like any other.
-    for (const topic& name : { topic_caught }) {
+    for (const auto& name : { topic_caught }) {
         bus_log(direction::PUBLISH_SYNC, name, failing);
         bus.publish_sync(name, failing);
         ++sync_published;
         ++expected_routed;
     }
-    const publish_status caught_status = bus.publish_async(topic_caught, failing);
+    const auto caught_status = bus.publish_async(topic_caught, failing);
     bus_log(direction::PUBLISH_ASYNC, topic_caught, failing);
     ++async_published;
     ++expected_routed;
@@ -405,8 +405,8 @@ int main() {
         return 1;
     }
 
-    const bool drained_failures = bus.flush(std::chrono::milliseconds { 2000 });
-    const std::size_t sink_total = sink_calls.load();
+    const auto drained_failures = bus.flush(std::chrono::milliseconds { 2000 });
+    const auto sink_total = sink_calls.load();
 
     std::cout << "  the throw from the asynchronous publish reached the bus's own sink, which has now been "
               << "called " << sink_total << " time(s)\n"
@@ -415,9 +415,9 @@ int main() {
               << "moved routed()\n\n";
 
     // --- summary -----------------------------------------------------------
-    const std::vector<std::uint64_t> order = reader.order();
-    const std::vector<std::thread::id> threads = reader.threads();
-    const std::size_t on_main = static_cast<std::size_t>(std::count(threads.begin(), threads.end(), main_thread));
+    const auto order = reader.order();
+    const auto threads = reader.threads();
+    const auto on_main = static_cast<std::size_t>(std::count(threads.begin(), threads.end(), main_thread));
 
     std::cout << "--- summary ---\n"
               << "  the reader recorded " << render_order(order) << '\n'
@@ -432,7 +432,7 @@ int main() {
     // supposed to catch, which is why the counts are checked before any thread id is compared: "every
     // asynchronous delivery ran off this thread" is true and worthless when there were none.
     std::cout << "\n--- verify ---\n";
-    bool agreed = true;
+    auto agreed = true;
     const auto require = [&agreed](bool condition, const std::string& claim) {
         if (condition) { return; }
         std::cerr << "  FAILED: " << claim << '\n';
@@ -497,7 +497,7 @@ int main() {
             agreed = false;
             break;
         }
-        const std::vector<std::uint64_t> probe_order = again.order();
+        const auto probe_order = again.order();
         require(probe_order == order, "a second bus delivered the same order for the same sequence");
         std::cout << "  pass " << pass << " on a second bus: " << render_order(probe_order) << '\n';
     }

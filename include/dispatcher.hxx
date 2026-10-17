@@ -77,7 +77,7 @@ public:
             throw std::invalid_argument("executor id 0 names the caller's thread and cannot be registered");
         }
 
-        const std::unique_lock lock(mutex_);
+        const std::unique_lock<std::shared_mutex> lock(mutex_);
         return executors_.emplace(id, std::move(exec)).second;
     }
 
@@ -101,7 +101,7 @@ public:
     bool remove(executor_id id) {
         std::shared_ptr<executor> retired;
         {
-            const std::unique_lock lock(mutex_);
+            const std::unique_lock<std::shared_mutex> lock(mutex_);
             const auto found = executors_.find(id);
             if (found == executors_.end()) { return false; }
             retired = std::move(found->second);
@@ -116,7 +116,7 @@ public:
     /// looked the executor up holds it alive for the whole `submit`, whether or not the map still names it.
     [[nodiscard]]
     std::shared_ptr<executor> find(executor_id id) const {
-        const std::shared_lock lock(mutex_);
+        const std::shared_lock<std::shared_mutex> lock(mutex_);
         const auto found = executors_.find(id);
         return found == executors_.end() ? nullptr : found->second;
     }
@@ -124,14 +124,14 @@ public:
     /// @brief Whether `id` names a registered executor.
     [[nodiscard]]
     bool contains(executor_id id) const {
-        const std::shared_lock lock(mutex_);
+        const std::shared_lock<std::shared_mutex> lock(mutex_);
         return executors_.contains(id);
     }
 
     /// @brief How many executors are registered.
     [[nodiscard]]
     std::size_t size() const noexcept {
-        const std::shared_lock lock(mutex_);
+        const std::shared_lock<std::shared_mutex> lock(mutex_);
         return executors_.size();
     }
 
@@ -146,7 +146,7 @@ public:
     /// @return the first unhandled exception from a delivery that ran **on this thread**, or null; every
     /// sibling is still attempted either way
     /// @details The reason this class exists rather than the router doing the fan-out itself is the third
-    /// argument to `submit`: each delivery carries its own `dispatch_options`, so one topic can reach a
+    /// argument to `submit`: each route carries its own `dispatch_options`, so one topic can reach a
     /// telemetry subscriber that wants `DROP_OLDEST` and a command subscriber that wants `DROP_NEW` in the
     /// same fan-out, and each policy is honoured.
     /// @note A delivery naming an unregistered executor is **not** run inline: putting a handler on a thread
@@ -159,12 +159,12 @@ public:
     /// normal back-pressure into an exception per message.
     [[nodiscard]]
     std::exception_ptr dispatch(
-        std::span<const delivery> routes, const std::shared_ptr<const message>& msg, error_handler on_failure = {}
+        std::span<const route> routes, const std::shared_ptr<const message>& msg, error_handler on_failure = {}
     ) const;
 
     /// @brief Convenience: hands `msg` over as the shared payload a submitted closure captures.
     [[nodiscard]]
-    std::exception_ptr dispatch(std::span<const delivery> routes, message msg, error_handler on_failure = {}) const {
+    std::exception_ptr dispatch(std::span<const route> routes, message msg, error_handler on_failure = {}) const {
         return dispatch(routes, std::make_shared<const message>(std::move(msg)), std::move(on_failure));
     }
 
@@ -185,7 +185,7 @@ public:
     void release() noexcept {
         std::vector<std::shared_ptr<executor>> all;
         {
-            const std::shared_lock lock(mutex_);
+            const std::shared_lock<std::shared_mutex> lock(mutex_);
             all.reserve(executors_.size());
             for (const auto& [id, exec] : executors_) {
                 static_cast<void>(id);
@@ -207,20 +207,20 @@ private:
 };
 
 inline std::exception_ptr dispatcher::dispatch(
-    std::span<const delivery> routes, const std::shared_ptr<const message>& msg, error_handler on_failure
+    std::span<const route> routes, const std::shared_ptr<const message>& msg, error_handler on_failure
 ) const {
     std::exception_ptr first;
 
-    for (const delivery& route : routes) {
-        const executor_id target = route.options_.executor_;
+    for (const auto& route : routes) {
+        const auto target = route.options_.executor_;
         if (target == INLINE) {
-            if (const std::exception_ptr failure = router::deliver(route, *msg); failure && !first) { first = failure; }
+            if (const auto failure = router::deliver(route, *msg); failure && !first) { first = failure; }
             continue;
         }
 
-        const std::shared_ptr<executor> exec = find(target);
+        const auto exec = find(target);
         if (!exec) {
-            const std::exception_ptr failure = std::make_exception_ptr(
+            const auto failure = std::make_exception_ptr(
                 std::runtime_error("no executor is registered under the id this subscription named")
             );
             dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -239,16 +239,16 @@ inline std::exception_ptr dispatcher::dispatch(
         // lock beyond what `find` already did, and any handler's own exception stays on this thread,
         // where the failure recovery below can still reach a caller.
         if (exec->is_on_worker_thread()) {
-            const std::exception_ptr failure = router::deliver(route, *msg);
+            const auto failure = router::deliver(route, *msg);
             if (failure && !first) { first = failure; }
             continue;
         }
 
         // The failure recovery lives in the closure, not here: by the time the worker runs it, `dispatch`
         // has long returned, and `on_failure` is the only channel left.
-        const submit_status outcome = exec->submit(
+        const auto outcome = exec->submit(
             [route, msg, on_failure] {
-                const std::exception_ptr failure = router::deliver(route, *msg);
+                const auto failure = router::deliver(route, *msg);
                 if (!failure) { return; }
                 if (on_failure) {
                     try {

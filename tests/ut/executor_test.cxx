@@ -107,7 +107,7 @@ TEST(executor_test, submit_runs_the_item_on_the_worker_and_is_observable_through
 
     EXPECT_TRUE(ran.load());
     EXPECT_EQ(exec.pending(), 0u);
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.submitted_, 1u);
     EXPECT_EQ(stats.completed_, 1u);
     EXPECT_EQ(stats.failed_, 0u);
@@ -119,7 +119,7 @@ TEST(executor_test, submit_rejects_an_empty_item_without_touching_the_queue) {
     EXPECT_THROW(sink(exec.submit(work_item {})), std::invalid_argument);
 
     EXPECT_EQ(exec.pending(), 0u);
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.submitted_, 0u);
     EXPECT_EQ(stats.rejected_, 0u);
     EXPECT_EQ(stats.completed_, 0u);
@@ -155,7 +155,7 @@ TEST(executor_test, an_unbounded_executor_never_applies_a_policy) {
     EXPECT_EQ(exec.submit([] {}, back_pressure::DROP_NEW), submit_status::ACCEPTED);
     EXPECT_TRUE(exec.drain());
 
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.submitted_, 3u);
     EXPECT_EQ(stats.completed_, 3u);
     EXPECT_EQ(stats.dropped_, 0u);
@@ -191,7 +191,7 @@ TEST(executor_test, a_reject_policy_refuses_when_full_and_drops_nothing) {
 
     EXPECT_EQ(exec.submit([] {}, back_pressure::DROP_NEW), submit_status::REJECTED);
 
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.rejected_, 1u);
     EXPECT_EQ(stats.dropped_, 0u) << "a refusal evicts nothing";
     EXPECT_EQ(exec.pending(), 1u);
@@ -311,9 +311,8 @@ TEST(executor_test, a_submit_from_the_executors_own_worker_runs_inline) {
 
     EXPECT_EQ(
         exec.submit([&exec, &nested_runs, &all_inline] {
-            for (const back_pressure policy :
-                 { back_pressure::BLOCK, back_pressure::DROP_OLDEST, back_pressure::DROP_NEW }) {
-                const submit_status status = exec.submit([&nested_runs] { ++nested_runs; }, policy);
+            for (const auto policy : { back_pressure::BLOCK, back_pressure::DROP_OLDEST, back_pressure::DROP_NEW }) {
+                const auto status = exec.submit([&nested_runs] { ++nested_runs; }, policy);
                 if (status != submit_status::ACCEPTED) { all_inline = false; }
             }
             // Each nested closure runs inline, so all three have run before this line.
@@ -326,7 +325,7 @@ TEST(executor_test, a_submit_from_the_executors_own_worker_runs_inline) {
 
     EXPECT_TRUE(all_inline.load());
     EXPECT_EQ(nested_runs.load(), 3);
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.submitted_, 4u) << "the outer item plus three inline ones";
     EXPECT_EQ(stats.completed_, 4u);
 }
@@ -505,8 +504,8 @@ TEST(executor_test, pending_never_exceeds_capacity_under_concurrent_submits) {
 
     std::thread reader([&exec, &stop, &worst] {
         while (!stop.load()) {
-            const std::size_t seen = exec.pending();
-            std::size_t previous = worst.load();
+            const auto seen = exec.pending();
+            auto previous = worst.load();
             while (seen > previous && !worst.compare_exchange_weak(previous, seen)) {}
         }
     });
@@ -549,7 +548,7 @@ TEST(executor_test, an_exception_escaping_an_item_goes_to_the_sink) {
         EXPECT_STREQ(error.what(), "boom");
     }
 
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.failed_, 1u);
     EXPECT_EQ(stats.completed_, 0u);
     EXPECT_EQ(stats.submitted_, 1u);
@@ -566,7 +565,7 @@ TEST(executor_test, a_throwing_item_does_not_stop_the_queue) {
 
     EXPECT_TRUE(second_ran.load());
     EXPECT_EQ(sink_calls.load(), 1);
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.failed_, 1u);
     EXPECT_EQ(stats.completed_, 1u);
 }
@@ -594,7 +593,7 @@ TEST(executor_test, a_sink_that_throws_is_swallowed) {
     EXPECT_TRUE(exec.drain());
     EXPECT_EQ(sink_calls.load(), 1);
     EXPECT_TRUE(later_ran.load()) << "the worker kept draining";
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.failed_, 1u);
     EXPECT_EQ(stats.completed_, 1u);
 }
@@ -622,7 +621,7 @@ TEST(executor_test, release_stops_accepting_further_work) {
     EXPECT_EQ(exec.submit([] {}, back_pressure::DROP_OLDEST), submit_status::CLOSED);
     EXPECT_EQ(exec.submit([] {}, back_pressure::DROP_NEW), submit_status::CLOSED);
 
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.rejected_, 3u);
     EXPECT_EQ(stats.submitted_, 0u);
 }
@@ -725,7 +724,7 @@ TEST(executor_test, destruction_waits_for_work_in_flight) {
     // Real threads: the destructor runs release(), which must wait for the gated in-flight item.
     std::atomic<int> ran { 0 };
     gate g;
-    std::unique_ptr<executor> exec = std::make_unique<executor>();
+    auto exec = std::make_unique<executor>();
 
     EXPECT_EQ(
         exec->submit([&g, &ran] {
@@ -870,7 +869,7 @@ TEST(executor_test, deferred_rejects_an_empty_build_without_touching_the_queue) 
     EXPECT_THROW(sink(exec.submit_deferred(work_item_deferred {})), std::invalid_argument);
 
     EXPECT_EQ(exec.pending(), 0u);
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.submitted_, 0u);
     EXPECT_EQ(stats.rejected_, 0u);
     EXPECT_EQ(stats.completed_, 0u);
@@ -980,7 +979,7 @@ TEST(executor_test, concurrent_submits_are_all_accounted_for) {
     executor exec;
     constexpr int THREADS = 4;
     constexpr int PER_THREAD = 100;
-    constexpr std::uint64_t TOTAL = static_cast<std::uint64_t>(THREADS) * static_cast<std::uint64_t>(PER_THREAD);
+    constexpr auto TOTAL = static_cast<std::uint64_t>(THREADS) * static_cast<std::uint64_t>(PER_THREAD);
 
     std::vector<std::thread> submitters;
     submitters.reserve(THREADS);
@@ -991,10 +990,10 @@ TEST(executor_test, concurrent_submits_are_all_accounted_for) {
             }
         });
     }
-    for (std::thread& submitter : submitters) { submitter.join(); }
+    for (auto& submitter : submitters) { submitter.join(); }
 
     EXPECT_TRUE(exec.drain());
-    const executor_stats stats = exec.stats();
+    const auto stats = exec.stats();
     EXPECT_EQ(stats.submitted_, TOTAL);
     EXPECT_EQ(stats.completed_, TOTAL);
     EXPECT_EQ(stats.dropped_, 0u);
