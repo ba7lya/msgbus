@@ -303,10 +303,7 @@ BENCHMARK(bm_publish_async_round_trip)->Arg(1)->Arg(64)->Unit(::benchmark::kMicr
 /// evicts its predecessor. This is the only benchmark here whose subject is the queue's bound rather
 /// than the routing table, and it is the price a slow subscriber puts on its publisher.
 static void bm_publish_async_drop_oldest(::benchmark::State& state) {
-    msgbus::config settings;
-    settings.queue_capacity_ = 1;
-    settings.policy_ = back_pressure::DROP_OLDEST;
-    msgbus bus { std::move(settings) };
+    msgbus bus { 1, back_pressure::DROP_OLDEST };
     std::vector<subscription> armed;
     if (!add_inline_subscriptions(bus, "site/#", 1, armed)) {
         state.SkipWithError("the benchmark's own subscription pattern was rejected");

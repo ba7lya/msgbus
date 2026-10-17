@@ -256,15 +256,6 @@ private:
     std::vector<subscription> handles_;
 };
 
-/// @brief A bus configuration with a bound and a policy, and no error sink.
-[[nodiscard]]
-msgbus::config bounded(std::size_t capacity, back_pressure policy) {
-    msgbus::config settings;
-    settings.queue_capacity_ = capacity;
-    settings.policy_ = policy;
-    return settings;
-}
-
 // --- construction and lifecycle -----------------------------------------------------------------------
 
 TEST(msgbus_test, a_new_bus_has_no_subscriptions_and_has_routed_nothing) {
@@ -533,10 +524,8 @@ TEST(msgbus_test, publish_async_is_accepted_when_nothing_matches) {
 
 TEST(msgbus_test, publish_async_reports_a_malformed_topic_to_the_error_sink) {
     // The parse happens on the worker, where there is no caller left to throw at.
-    msgbus::config settings;
     failure_log log;
-    settings.on_exception_ = log.sink();
-    msgbus bus(std::move(settings));
+    msgbus bus(log.sink());
 
     EXPECT_EQ(bus.publish_async("a//b", std::any { 1 }), publish_status::ACCEPTED) << "nothing is parsed at once";
     EXPECT_TRUE(bus.flush(std::chrono::milliseconds { 2000 }));
@@ -577,7 +566,7 @@ TEST(msgbus_test, publish_async_carries_the_messages_provenance_to_the_handler) 
 
 TEST(msgbus_test, publish_async_rejects_when_the_routing_queue_is_full_under_drop_new) {
     // Real threads: a gated handler occupies the worker, so the one-slot queue can be filled exactly.
-    msgbus bus(bounded(1, back_pressure::DROP_NEW));
+    msgbus bus(1, back_pressure::DROP_NEW);
     registrations armed;
     gate g;
     std::atomic<int> ran { 0 };
@@ -604,7 +593,7 @@ TEST(msgbus_test, publish_async_rejects_when_the_routing_queue_is_full_under_dro
 
 TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
     // Real threads: the evicted message is the one that would have run second.
-    msgbus bus(bounded(1, back_pressure::DROP_OLDEST));
+    msgbus bus(1, back_pressure::DROP_OLDEST);
     registrations armed;
     gate g;
     std::mutex mutex;
@@ -641,7 +630,7 @@ TEST(msgbus_test, publish_async_evicts_the_oldest_message_under_drop_oldest) {
 
 TEST(msgbus_test, publish_async_under_block_never_rejects_a_full_queue) {
     // Real threads: the gated worker holds the queue full while a publisher parks in publish_async.
-    msgbus bus(bounded(1, back_pressure::BLOCK));
+    msgbus bus(1, back_pressure::BLOCK);
     registrations armed;
     gate g;
     std::atomic<int> ran { 0 };
@@ -679,7 +668,7 @@ TEST(msgbus_test, publish_async_from_the_routing_worker_is_rejected_when_the_que
     // Real threads: the handler runs on the routing worker and publishes into the very queue it is
     // draining, which is full. Running inline is impossible for a deferred closure and queuing would
     // deadlock, so the refusal is the documented answer.
-    msgbus bus(bounded(1, back_pressure::DROP_NEW));
+    msgbus bus(1, back_pressure::DROP_NEW);
     registrations armed;
     gate g;
     std::atomic<publish_status> nested { publish_status::ACCEPTED };
@@ -859,10 +848,8 @@ TEST(msgbus_test, publish_sync_does_not_wait_for_an_executor_bound_delivery) {
 TEST(msgbus_test, a_subscription_naming_an_unregistered_executor_is_dropped_and_reported) {
     // The handler is not run inline: putting it on a thread dispatch_options did not name would be a
     // worse lie than a lost delivery.
-    msgbus::config settings;
     failure_log log;
-    settings.on_exception_ = log.sink();
-    msgbus bus(std::move(settings));
+    msgbus bus(log.sink());
     registrations armed;
     recorder received;
     armed.add(bus, "a/b", received.callback(), dispatch_options { 42 });
@@ -958,10 +945,8 @@ TEST(msgbus_test, a_synchronous_failure_does_not_skip_the_other_subscribers) {
 
 TEST(msgbus_test, an_asynchronous_failure_with_no_error_handler_reaches_the_error_sink) {
     // There is no caller left by the time the worker runs the handler, so the bus's own channel takes it.
-    msgbus::config settings;
     failure_log log;
-    settings.on_exception_ = log.sink();
-    msgbus bus(std::move(settings));
+    msgbus bus(log.sink());
     registrations armed;
     armed.add(
         bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { msgbus::ROUTER }
@@ -975,10 +960,8 @@ TEST(msgbus_test, an_asynchronous_failure_with_no_error_handler_reaches_the_erro
 }
 
 TEST(msgbus_test, an_asynchronous_failure_on_an_executor_thread_reaches_the_error_sink) {
-    msgbus::config settings;
     failure_log log;
-    settings.on_exception_ = log.sink();
-    msgbus bus(std::move(settings));
+    msgbus bus(log.sink());
     registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
     armed.add(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { 7 });
@@ -991,10 +974,8 @@ TEST(msgbus_test, an_asynchronous_failure_on_an_executor_thread_reaches_the_erro
 }
 
 TEST(msgbus_test, an_executor_bound_failure_goes_to_its_own_error_handler_not_the_sink) {
-    msgbus::config settings;
     failure_log log;
-    settings.on_exception_ = log.sink();
-    msgbus bus(std::move(settings));
+    msgbus bus(log.sink());
     registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
     std::atomic<int> handled { 0 };
@@ -1014,9 +995,7 @@ TEST(msgbus_test, an_executor_bound_failure_goes_to_its_own_error_handler_not_th
 TEST(msgbus_test, an_error_sink_that_throws_does_not_take_the_worker_down) {
     // Real threads: the sink is user code called from a worker; a throwing sink would otherwise unwind
     // into a thread function and terminate the process.
-    msgbus::config settings;
-    settings.on_exception_ = [](std::exception_ptr) { throw std::logic_error("sink failed"); };
-    msgbus bus(std::move(settings));
+    msgbus bus([](std::exception_ptr) { throw std::logic_error("sink failed"); });
     registrations armed;
     armed.add(
         bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { msgbus::ROUTER }
@@ -1033,10 +1012,8 @@ TEST(msgbus_test, an_error_sink_that_throws_does_not_take_the_worker_down) {
 }
 
 TEST(msgbus_test, the_error_sink_is_isolated_from_a_failure_it_cannot_handle) {
-    msgbus::config settings;
     failure_log log;
-    settings.on_exception_ = log.sink();
-    msgbus bus(std::move(settings));
+    msgbus bus(log.sink());
     registrations armed;
     ASSERT_TRUE(bus.add_executor(7));
     armed.add(bus, "boom", [](const message&) { throw std::runtime_error("bang"); }, dispatch_options { 7 });

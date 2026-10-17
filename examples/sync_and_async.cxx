@@ -21,7 +21,7 @@
 // The second is who owns a handler's unhandled failure. A synchronous publish still has a caller when
 // the handler throws, so the throw travels back out of `publish_sync` and into that caller's `catch`.
 // An asynchronous one returned long before the handler ran, so the throw has nowhere left to go and
-// the bus's own `config::on_exception_` takes it instead. A subscriber that supplies its own
+// the bus's own `on_exception` sink takes it instead. A subscriber that supplies its own
 // `error_handler` keeps the failure on either path.
 //
 // The middle of the example parks the routing worker inside a handler, queues a backlog behind it, and
@@ -229,12 +229,9 @@ int main() {
     std::binary_semaphore entered { 0 };
     std::binary_semaphore gate { 0 };
 
-    msgbus::config settings;
-    // Assigning rather than brace-initialising: `config` has a constructor of its own -- that is how
-    // the bus can be built with all three settings defaulted -- so it is not an aggregate.
-    settings.on_exception_ = [&sink_calls](std::exception_ptr) { sink_calls.fetch_add(1, std::memory_order_relaxed); };
-
-    msgbus bus { std::move(settings) };
+    // The sink is the only setting this example names, so the one-argument overload keeps the queue
+    // bound and the back-pressure policy at their defaults rather than restating them.
+    msgbus bus { [&sink_calls](std::exception_ptr) { sink_calls.fetch_add(1, std::memory_order_relaxed); } };
 
     // Declared **after** the bus, so they are destroyed **before** it: every subscription is cancelled
     // while the bus is still running, and the drain the destructor does finds nothing armed. The other
@@ -379,9 +376,9 @@ int main() {
 
     // The same throw on the asynchronous path. The worker's `deliver_now` rethrows it exactly as this
     // thread's did -- but by then the work item is all that is left of the publish, and the executor
-    // catches whatever escapes one and hands it to the bus's own sink, which is the
-    // `config::on_exception_` built at the top. That sink is the channel for a failure with no caller
-    // left, and this is the only publish here that reaches it.
+    // catches whatever escapes one and hands it to the bus's own sink, which is the `on_exception`
+    // role built at the top. That sink is the channel for a failure with no caller left, and this is
+    // the only publish here that reaches it.
     const publish_status throwing_status = bus.publish_async(topic_throwing, failing);
     bus_log(direction::publish_async, topic_throwing, failing);
     ++async_published;
