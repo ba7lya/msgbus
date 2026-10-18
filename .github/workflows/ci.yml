@@ -1,0 +1,436 @@
+# SPDX-License-Identifier: MIT
+#
+# CI for the msgbus library: one job per compiler family, each spanning the newest three majors and
+# both Debug and Release configurations. The vcpkg submodule is never checked out; run-vcpkg clones
+# vcpkg at the commit vcpkg.json's builtin-baseline pins, so the manifest resolves to
+# the same ports.
+#
+# A sanitizer rides only the newest compiler of each family: a use-after-free, a race or an overflow
+# is a property of the source, not of the compiler, so older versions would find the same defect.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    # the glob needs both stars and the slash: '**.md' alone never matches README.md, the one file
+    # this rule exists for
+    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+  pull_request:
+    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # the commit vcpkg.json's builtin-baseline pins
+  VCPKG_COMMIT: e456309491fd875487bf02b8a0dca76c1b1b00cc
+  VCPKG_DISABLE_METRICS: 1
+  # run-vcpkg only fills VCPKG_BINARY_SOURCES in when undefined, and its default names the x-gha
+  # backend this vcpkg dropped, so every install warns; "default" archives into the directory
+  # VCPKG_DEFAULT_BINARY_CACHE names, which run-vcpkg points at its own cache step
+  VCPKG_BINARY_SOURCES: clear;default,readwrite
+  # the project's own build options, matching the BUILD_* options in the root CMakeLists
+  MSGBUS_CONFIGURE_FLAGS: >-
+    -Dba7lya.msgbus_BUILD_TEST=ON
+    -Dba7lya.msgbus_BUILD_BENCHMARK=ON
+    -Dba7lya.msgbus_BUILD_EXAMPLE=ON
+
+# every `uses:` names a commit SHA not a tag; .github/dependabot.yml is what keeps the pins current,
+# and the `# vN` comment beside a pin is what that PR rewrites
+jobs:
+  win-msvc:
+    name: win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # the job name appends the sanitizer while the preset names concatenate it. msvc ships
+        # address only: cl.exe silently ignores /fsanitize=thread and =undefined (warning D9002,
+        # exit code 0), so a tsan/ubsan job here would go green having checked nothing
+        version: [2022, 2026]
+        config: [Debug, Release]
+        san: ["", "asan"]
+        exclude:
+          # the instrument rides the newest toolset only
+          - version: 2022
+            san: asan
+        include:
+          # vs 2019 is absent: std::expected needs MSVC 17.12+, so the v142 toolset cannot compile
+          # this tree in C++23 mode
+          #
+          # vsversion selects the vs instance, toolset the compiler inside it
+          - version: 2022
+            os: windows-2022
+            vsversion: "2022"
+            toolset: "14.44"
+            base: win-msvc-2022-x64
+          - version: 2026
+            os: windows-2025-vs2026
+            vsversion: "2026"
+            toolset: "14.51"
+            base: win-msvc-2026-x64
+          - config: Debug
+            config_name: dbg
+          - config: Release
+            config_name: rel
+    env:
+      # the presets spell a sanitizer with a leading hyphen while the matrix names it bare
+      SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: false
+          # nothing in this workflow pushes
+          persist-credentials: false
+
+      # the presets pin cl.exe by bare name, so the toolset is chosen via PATH, not the preset's
+      # toolset field (the Ninja generators ignore it). rzlamrr/msvc-dev-cmd rather than ilammy:
+      # node24 (no node20 deprecation warning) and it knows the vs 2026 layout
+      #
+      # it must run before any test binary: the asan runtime is a DLL in the toolset bin directory
+      # and this action is what puts it on PATH
+      - uses: rzlamrr/msvc-dev-cmd@70b9da25ce35e6470a3bd4be4b4a1a4929a61925 # v2
+        with:
+          arch: x64
+          vsversion: ${{ matrix.vsversion }}
+          toolset: ${{ matrix.toolset }}
+
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: configure
+        shell: cmd
+        run: >
+          cmake --preset ${{ matrix.base }}${{ env.SAN }}
+          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          %MSGBUS_CONFIGURE_FLAGS%
+
+      - name: build
+        shell: cmd
+        run: cmake --build --preset ${{ matrix.base }}-${{ matrix.config_name }}${{ env.SAN }}
+
+      # --output-junit resolves a relative path against the build tree the test preset points at,
+      # so the report lands beside the binaries
+      #
+      # deliberately no ASAN_OPTIONS=detect_leaks=1 here: the msvc asan runtime does not implement
+      # leak detection, it fails every test instead. the flag is honest on Linux and is set there
+      - name: test
+        shell: cmd
+        run: ctest --preset ${{ matrix.base }}${{ env.SAN }}-test -C ${{ matrix.config }} --output-junit test-results.xml
+
+      # smoke runs are gated on the plain pass: they already ran there, and a timed benchmark under
+      # an instrument measures the instrument
+      - name: smoke the benchmarks
+        if: matrix.san == ''
+        shell: cmd
+        run: >
+          build\${{ matrix.base }}\bin\${{ matrix.config }}\msgbus_benchmark.exe
+          --benchmark_min_time=0.01s
+
+      - name: smoke the examples
+        if: matrix.san == ''
+        shell: cmd
+        run: build\${{ matrix.base }}\bin\${{ matrix.config }}\msgbus_example_basic_matching.exe
+
+      # failure(), not always(): a green run's junit is noise and would dominate artifact storage
+      - name: upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-results-win-msvc-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
+          path: build/${{ matrix.base }}${{ env.SAN }}/test-results.xml
+          retention-days: 7
+          if-no-files-found: warn
+
+  linux-gcc:
+    name: linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [14, 15, 16]
+        config: [Debug, Release]
+        san: ["", "asan", "tsan", "ubsan"]
+        exclude:
+          # as in the header: an instrument is a property of the source, not of the compiler, so
+          # 14 and 15 would detect the same defect again rather than a second one
+          - version: 14
+            san: asan
+          - version: 14
+            san: tsan
+          - version: 14
+            san: ubsan
+          - version: 15
+            san: asan
+          - version: 15
+            san: tsan
+          - version: 15
+            san: ubsan
+        include:
+          # config keeps the spelling the presets and ctest use, config_name the abbreviated one
+          # the job and artifact names use (dbg / rel)
+          - config: Debug
+            config_name: dbg
+          - config: Release
+            config_name: rel
+    env:
+      SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-gcc
+        with:
+          version: ${{ matrix.version }}
+
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: configure
+        run: >
+          cmake --preset linux-gcc-x64${{ env.SAN }}
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          $MSGBUS_CONFIGURE_FLAGS
+
+      - name: build
+        run: cmake --build --preset linux-gcc-x64-${{ matrix.config_name }}${{ env.SAN }}
+
+      # --output-junit resolves a relative path against the build tree the test preset points at,
+      # so the report lands beside the binaries
+      #
+      # halt_on_error turns a finding's non-zero exit into the one the job fails on;
+      # print_stacktrace makes a UB diagnostic locatable
+      - name: test
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+          UBSAN_OPTIONS: print_stacktrace=1 halt_on_error=1
+        run: |
+          ctest --preset linux-gcc-x64${{ env.SAN }}-test -C ${{ matrix.config }} \
+            --output-junit test-results.xml
+
+      # gated on the plain pass: they already ran there, and a timed benchmark under an instrument
+      # measures the instrument
+      - name: smoke the benchmarks
+        if: matrix.san == ''
+        run: ./build/linux-gcc-x64/bin/${{ matrix.config }}/msgbus_benchmark --benchmark_min_time=0.01s
+
+      - name: smoke the examples
+        if: matrix.san == ''
+        run: ./build/linux-gcc-x64/bin/${{ matrix.config }}/msgbus_example_basic_matching
+
+      - name: upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-results-linux-gcc-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
+          path: build/linux-gcc-x64${{ env.SAN }}/test-results.xml
+          retention-days: 7
+          if-no-files-found: warn
+
+  linux-clang:
+    name: linux-clang-${{ matrix.version }}-${{ matrix.config_name }}${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [21, 22, 23]
+        config: [Debug, Release]
+        # msan is deliberately absent on clang: it needs every dependency built with it, and vcpkg
+        # ports are precompiled, so it would report strings inside gtest/spdlog as uninitialised
+        san: ["", "asan", "tsan", "ubsan"]
+        exclude:
+          # the instruments ride the newest compiler only, as in the gcc job
+          - version: 21
+            san: asan
+          - version: 21
+            san: tsan
+          - version: 21
+            san: ubsan
+          - version: 22
+            san: asan
+          - version: 22
+            san: tsan
+          - version: 22
+            san: ubsan
+        include:
+          - config: Debug
+            config_name: dbg
+          - config: Release
+            config_name: rel
+    env:
+      SAN: ${{ matrix.san != '' && format('-{0}', matrix.san) || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ matrix.version }}
+          packages: clang-${{ matrix.version }}
+
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: configure
+        run: >
+          cmake --preset linux-clang-x64${{ env.SAN }}
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          $MSGBUS_CONFIGURE_FLAGS
+
+      - name: build
+        run: cmake --build --preset linux-clang-x64-${{ matrix.config_name }}${{ env.SAN }}
+
+      # --output-junit resolves a relative path against the build tree the test preset points at,
+      # so the report lands beside the binaries
+      - name: test
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+          UBSAN_OPTIONS: print_stacktrace=1 halt_on_error=1
+        run: |
+          ctest --preset linux-clang-x64${{ env.SAN }}-test -C ${{ matrix.config }} \
+            --output-junit test-results.xml
+
+      - name: smoke the benchmarks
+        if: matrix.san == ''
+        run: ./build/linux-clang-x64/bin/${{ matrix.config }}/msgbus_benchmark --benchmark_min_time=0.01s
+
+      - name: smoke the examples
+        if: matrix.san == ''
+        run: ./build/linux-clang-x64/bin/${{ matrix.config }}/msgbus_example_basic_matching
+
+      - name: upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-results-linux-clang-${{ matrix.version }}-${{ matrix.config_name }}${{ env.SAN }}
+          path: build/linux-clang-x64${{ env.SAN }}/test-results.xml
+          retention-days: 7
+          if-no-files-found: warn
+
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # LLVM 23 because .clang-format uses keys an older binary rejects outright
+    env:
+      LLVM_VERSION: 23
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: install clang-format
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: clang-format-${{ env.LLVM_VERSION }}
+          # the formatter is the only binary here, so skip the update-alternatives step
+          make-default: false
+
+      - name: clang-format --dry-run --Werror
+        run: |
+          set -o pipefail
+          find include src tests examples benchmark \
+            \( -name '*.cxx' -o -name '*.hxx' \) -print0 \
+            | xargs -0 -r clang-format-${LLVM_VERSION} --dry-run --Werror --style=file
+
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      LLVM_VERSION: 23
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: clang-${{ env.LLVM_VERSION }} clang-tidy-${{ env.LLVM_VERSION }} clang-tools-${{ env.LLVM_VERSION }}
+
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      # clang-tidy reads the compile database rather than guessing a command line
+      - name: configure
+        run: >
+          cmake --preset linux-clang-x64
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          "-DVCPKG_MANIFEST_FEATURES=test;benchmark"
+          $MSGBUS_CONFIGURE_FLAGS
+
+      - name: assert the compile database exists
+        run: test -s build/linux-clang-x64/compile_commands.json
+
+      # report only: clang-tidy exits non-zero for a compiler error but not for a warning
+      #
+      # -source-filter names tests/examples/benchmark only: .cxx files added under include/ would
+      # need adding there too
+      - name: clang-tidy
+        run: |
+          set -o pipefail
+          run-clang-tidy-${LLVM_VERSION} -p build/linux-clang-x64 \
+            -clang-tidy-binary clang-tidy-${LLVM_VERSION} \
+            -source-filter '/(tests|examples|benchmark)/' \
+            -header-filter '.*/(include|tests|examples|benchmark)/.*' \
+            2>&1 | tee clang-tidy.log
+
+      # the log alone sits behind an artifact click, so the count and first page also go to the job
+      # summary
+      - name: summarise the findings
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## clang-tidy (clang-${LLVM_VERSION})"
+            echo
+            if [ -s clang-tidy.log ]; then
+              # grep -c exits 1 on no match, which is not a failure here
+              n=$(grep -cE '(warning|error):' clang-tidy.log || true)
+              echo "${n} finding(s)"
+              echo
+              echo '```'
+              grep -E '(warning|error):' clang-tidy.log | head -50 || true
+              echo '```'
+              if [ "${n:-0}" -gt 50 ]; then
+                echo
+                echo '_truncated at 50; the full log is in the clang-tidy-report artifact._'
+              fi
+            else
+              echo "no findings"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: clang-tidy-report
+          path: clang-tidy.log
+          retention-days: 7
+          if-no-files-found: warn

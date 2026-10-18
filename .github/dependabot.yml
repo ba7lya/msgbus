@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# Keeps the SHA-pinned actions current: without an upstream comparison they freeze past a
+# security fix. Weekly, off the hour and off the nightly; dependabot rewrites SHAs, not tags.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      # the nightly is weekly too, so keep this off its day and off the hour
+      interval: weekly
+      day: monday
+      time: "04:23"
+    # dependabot must rewrite the SHA as a full SHA, not downgrade it to a tag
+    commit-message:
+      prefix: "[build]"
+    groups:
+      # one PR: these actions travel together, so one bump means one matrix run, not five
+      actions:
+        patterns: ["*"]

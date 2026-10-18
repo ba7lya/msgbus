@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: MIT
+# One LLVM major from apt.llvm.org, optionally registered as the default clang.
+# The install priority is load-bearing: see the comment on the update-alternatives step.
+name: setup-llvm
+description: >-
+  Installs one LLVM major from apt.llvm.org and, when `make-default` is set, registers its
+  clang/clang++ as the default compiler and fails loudly if that does not take.
+
+inputs:
+  version:
+    description: the LLVM major, as in the `llvm-toolchain-noble-<version>` suite name
+    required: true
+  packages:
+    description: >-
+      the apt packages to install, version-suffixed as apt.llvm.org names them, separated by spaces
+      (`clang-23`, `clang-tidy-23 clang-tools-23`, `clang-format-23`). `ninja-build` is added
+      automatically.
+    required: true
+  make-default:
+    description: >-
+      whether to register clang/clang++ through update-alternatives and verify the switch took.
+      Leave false for jobs that install only a tool (clang-format) and never invoke the compiler.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: install llvm ${{ inputs.version }}
+      shell: bash
+      # inputs arrive via the environment, so a crafted input cannot become shell
+      env:
+        LLVM_VERSION: ${{ inputs.version }}
+        LLVM_PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+          | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+        echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
+          | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+        sudo apt-get update
+        # shellcheck disable=SC2086 -- LLVM_PACKAGES is a space-separated list by contract
+        sudo apt-get install -y ${LLVM_PACKAGES} ninja-build
+
+    - name: make llvm ${{ inputs.version }} the default compiler
+      if: inputs.make-default == 'true'
+      shell: bash
+      env:
+        LLVM_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        # 200, not 100: the image registers clang 18 at 100, and on a tie update-alternatives keeps
+        # the incumbent, so 100 would never point the link at this compiler
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${LLVM_VERSION} 200
+        sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-${LLVM_VERSION} 200
+        clang --version
+        clang++ --version
+        # update-alternatives is silent when the switch does not take, so assert the version that
+        # was asked for
+        clang++ --version | grep -q "clang version ${LLVM_VERSION}\."

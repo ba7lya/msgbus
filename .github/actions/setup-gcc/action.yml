@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: MIT
+# Install one GCC major from the ubuntu-toolchain-r PPA and register it as the default gcc/g++.
+# Newer than noble's gcc 14 must come from the PPA. Priority 100, not the LLVM action's 200: the
+# image registers its own gcc at 100 and nothing registers a *newer* gcc higher, so 100 moves the
+# link. Clang does hit that tie, which is why that action has to outrank it.
+name: setup-gcc
+description: >-
+  Installs one GCC major from ppa:ubuntu-toolchain-r/test, registers its gcc/g++ as the default,
+  and fails loudly if that switch does not take.
+
+inputs:
+  version:
+    description: the GCC major, as in the `gcc-<version>` package name
+    required: true
+  packages:
+    description: >-
+      extra apt packages to install alongside `gcc-<version>` and `g++-<version>`, separated by
+      spaces. `ninja-build` is added automatically.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: install gcc ${{ inputs.version }}
+      shell: bash
+      # inputs arrive via env, not interpolated into the script body, so input cannot become shell
+      env:
+        GCC_VERSION: ${{ inputs.version }}
+        EXTRA_PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y software-properties-common
+        sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+        sudo apt-get update
+        # shellcheck disable=SC2086 -- EXTRA_PACKAGES is a space-separated list
+        sudo apt-get install -y gcc-${GCC_VERSION} g++-${GCC_VERSION} ninja-build ${EXTRA_PACKAGES}
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${GCC_VERSION} 100
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${GCC_VERSION} 100
+        # the switch above is silent when it does not take, so make a wrong compiler loud
+        g++ --version | grep -q " ${GCC_VERSION}\."

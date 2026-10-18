@@ -1,0 +1,26 @@
+{
+  "name": "ba7lya-msgbus",
+  "description": "An in-process message bus for an IoT gateway: topic paths matched level by level or by literal prefix",
+  "homepage": "https://github.com/ba7lya/msgbus",
+  "license": "MIT",
+  "maintainers": "BA7LYA <1042140025@qq.com>",
+  "builtin-baseline": "20ceb8adbf0504d4b0d5e4058a32f9d4fc896391",
+  "dependencies": [
+    "spdlog"
+  ],
+  "features": {
+    "test": {
+      "description": "Build the GoogleTest unit-test suite",
+      "dependencies": [
+        "gtest"
+      ]
+    },
+    "benchmark": {
+      "description": "Build the google benchmark suite",
+      "dependencies": [
+        "benchmark"
+      ]
+    }
+  },
+  "overrides": []
+}
